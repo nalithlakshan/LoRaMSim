@@ -40,7 +40,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 0
+    sim.realtime_graphics = 1
     sim.debug = 0
 
     sim.positional_algo = True

@@ -202,10 +202,9 @@ def timingCollision(p1, p2):
 # this function computes the airtime of a packet
 # according to LoraDesignGuide_STD.pdf
 #
-def airtime(sf,cr,pl,bw):
+def airtime(sf,cr,pl,bw, premlen=8):
     H = 0        # implicit header disabled (H=0) or not (H=1)
     DE = 0       # low data rate optimization enabled (=1) or not (=0)
-    Npream = 8   # number of preamble symbol (12.25  from Utz paper)
 
     if bw == 125 and sf in [11, 12]:
         # low data rate optimization mandated for BW125 with SF11 and SF12
@@ -215,10 +214,10 @@ def airtime(sf,cr,pl,bw):
         H = 1
 
     Tsym = (2.0**sf)/bw
-    Tpream = (Npream + 4.25)*Tsym
+    Tpream = (premlen + 4.25)*Tsym
     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0)
     Tpayload = payloadSymbNB * Tsym
-    return Tpream + Tpayload
+    return Tpream, Tpayload
 
 
 #FUNCTIONS FOR POSITION LEARNING ALGORITHM
@@ -299,6 +298,8 @@ def networkConfig():
     global nodes
     for i in range(len(nodes)):
         nodes[i].createPackets()
+        if(realtime_graphics == 1 and graphics == 1):
+            nodes[i].txArrowPlots = [None] * len(nodes)
 
     run_position_learning()
     
@@ -440,7 +441,7 @@ class node():
         return rssi + random.uniform(-1, 1) #random noise added
 
 
-    def createPackets(self):
+    def createPackets(self, packetType = "OTHER", premlen=8):
         global experiment
         global Ptx
         global minsensi
@@ -559,14 +560,19 @@ class node():
             freq = random.choice([860000000, 864000000, 868000000])
    
         # create virtual packets for each other node
-        for i in range(0,len(nodes)):
-            if(self.type.upper() == "ED"):
-                self.packet.append(myPacket(self.id, 20, self.dist[i], i, 0, sf, cr, bw, freq))
-            else:
-                self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx, sf, cr, bw, freq))
-
-        if(realtime_graphics == 1 and graphics == 1):
-            self.txArrowPlots = [None] * len(nodes)
+        self.packet = []
+        if(packetType == "WOR_up" or packetType == "WOR_down"):
+            for i in range(0,len(nodes)):
+                if(self.type.upper() == "ED"):
+                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen))
+                else:
+                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen))
+        else:
+            for i in range(0,len(nodes)):
+                if(self.type.upper() == "ED"):
+                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen))
+                else:
+                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen))
 
 
     def drawTxArrows(self):
@@ -680,7 +686,11 @@ class node():
         global totalSimPackets
 
         self.tx_activity["active"] = True
+        self.createPackets("DATA_up")
         self.tx_activity["start"] = env.now
+        self.tx_activity["end"] = env.now + self.packet[0].rectime
+        self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+        self.tx_activity["tx_packet_type"] = "DATA_up"
         self.sent = self.sent + 1
 
         global nodes
@@ -777,7 +787,11 @@ class node():
                 break
 
             self.tx_activity["active"] = True
+            self.createPackets("DATA_up")
             self.tx_activity["start"] = env.now
+            self.tx_activity["end"] = env.now + self.packet[0].rectime
+            self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+            self.tx_activity["tx_packet_type"] = "DATA_up"
             self.sent = self.sent + 1
             self.tx_status_file.write(str(env.now))
 
@@ -1008,7 +1022,11 @@ class node():
 
         
         self.tx_activity["active"] = True #starting transmission
+        self.createPackets("DATA_up")
         self.tx_activity["start"] = env.now
+        self.tx_activity["end"] = env.now + self.packet[0].rectime
+        self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+        self.tx_activity["tx_packet_type"] = "DATA_up"
         self.tx_status_file.write(str(env.now))
         self.batteryUpdate(env, self.currentTx)
 
@@ -1106,7 +1124,7 @@ class node():
 #
 class myPacket():
     def __init__(self, nodeid, plen, distance, rxNodeId,
-                 txPower=14, sf=12, cr=4, bw=125, freq=860000000):
+                 txPower=14, sf=12, cr=4, bw=125, freq=860000000, packetType="OTHER", premlen=8):
         global experiment
         global gamma
         global d0
@@ -1119,6 +1137,7 @@ class myPacket():
         self.rxNodeId = rxNodeId
         self.nodeid = nodeid
         self.pl = plen
+        self.packetType = packetType
 
         #LoRa Parameters
         self.ptx  = txPower
@@ -1134,7 +1153,7 @@ class myPacket():
             Lpl = 0
         self.rssi = self.ptx - GL - Lpl
         self.symTime = (2.0**self.sf)/self.bw
-        self.rectime = airtime(self.sf,self.cr,self.pl,self.bw)
+
         self.collided = 0
         self.processed = 0
         if(self.bw == 125):
@@ -1145,11 +1164,13 @@ class myPacket():
             minsensi = sensi[self.sf-7][3]
         self.lost = self.rssi < minsensi
 
-        # if(nodes[nodeid].type =="ed"):
-        #     print("txPower: ", txPower)
-        #     print("RSSI: ", self.rssi)
-        #     print("Min Sensi: ", minsensi)
-        #     print("Lost: ", self.lost)
+        self.Tprem, self.Tpayload = airtime(self.sf,self.cr,self.pl,self.bw)
+        if(premlen == 8):
+            self.rectime = self.Tprem + self.Tpayload
+        else:
+            self.Tprem = self.symTime * (premlen + 4.25)
+            self.rectime = self.Tprem + self.Tpayload
+
 
         global debug
         if(debug):
