@@ -1,0 +1,6 @@
+# Ignore simulation output data
+Tests/battery status data/*.csv
+Tests/tx status data/*.txt
+
+# Ignore plots
+Tests/plots/*.png
