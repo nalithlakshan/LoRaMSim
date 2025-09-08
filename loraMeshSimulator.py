@@ -75,7 +75,7 @@ def checkcollision(packet, receiverNode):
             packet.seqNr, packet.nodeid,receiverNode.id, packet.sf, packet.bw, packet.freq/10.0**6, len(receiverNode.packetSourcesAtRx)-1))
 
     #checking whether the receiving node has only one antenna, which is also in TX mode
-    if(receiverNode.antennaType.lower() == "single" and receiverNode.transmittingState == 1):
+    if(receiverNode.antennaType.lower() == "single" and receiverNode.tx_activity["active"]):
         packet.collided = 1
         packet.processed = 0
         col = 1
@@ -340,6 +340,16 @@ class node():
         self.nextRp = -1
         self.nextRpOriginal = -1
 
+        #Tx antenna state
+        self.tx_activity = {
+            "active": False,
+            "start": None,
+            "end": None,
+            "preamble_duration": None,
+            "tx_packet_type": "OTHER",  # Can be "WOR_up", "WOR_down", "DATA_up", "DATA_down", "OTHER"
+            "in_preamble": lambda env: self.tx_activity["start"] is not None and self.tx_activity["start"] <= env.now < self.tx_activity["start"] + self.tx_activity["preamble_duration"]
+        }
+
         #Power Consumption
         self.batteryCapacity  = 100 #mAh
         self.batteryRemaining = 100 #mAh
@@ -374,7 +384,7 @@ class node():
         #properties specific to repeaters
         self.packetsFifo = simpy.Store(env)
         self.nTransmitters = simpy.Resource(env, capacity=1)
-        self.transmittingState = 0
+        self.tx_activity["active"] = False
         self.standbyBuffer = []
         self.lowerDistanceRecBuffer = []
         self.txTimePercentage = 0
@@ -611,12 +621,12 @@ class node():
         global nodes
         global xmax
         global ymax
-        if(self.id not in transmittingNodeIDs and self.transmittingState):
+        if(self.id not in transmittingNodeIDs and self.tx_activity["active"]):
             transmittingNodeIDs.append(self.id)
         transmittingNodeIDsTemp = transmittingNodeIDs.copy()
         txInfoString = ""
         for i in range(len(transmittingNodeIDsTemp)):
-            if(nodes[transmittingNodeIDsTemp[i]].transmittingState):
+            if(nodes[transmittingNodeIDsTemp[i]].tx_activity["active"]):
                 txInfoString += f"Node {transmittingNodeIDsTemp[i]} transmitting pkt {nodes[transmittingNodeIDsTemp[i]].packet[0].seqNr}\n"
             else:
                 transmittingNodeIDs.remove(transmittingNodeIDsTemp[i])
@@ -632,12 +642,12 @@ class node():
         global nodes
         global xmax
         global ymax
-        if(self.id not in transmittingNodeIDs and self.transmittingState):
+        if(self.id not in transmittingNodeIDs and self.tx_activity["active"]):
             transmittingNodeIDs.append(self.id)
         
         colPktObjects = []
         for i in range(len(transmittingNodeIDs)):
-            if(nodes[transmittingNodeIDs[i]].transmittingState):
+            if(nodes[transmittingNodeIDs[i]].tx_activity["active"]):
                 for j in range(len(nodes)):
                     pk = nodes[transmittingNodeIDs[i]].packet[j]
                     if(pk.lost == False and pk.collided == True):
@@ -669,7 +679,8 @@ class node():
 
         global totalSimPackets
 
-        self.transmittingState = 1
+        self.tx_activity["active"] = True
+        self.tx_activity["start"] = env.now
         self.sent = self.sent + 1
 
         global nodes
@@ -713,7 +724,7 @@ class node():
         
         # air time (take first packet rectime)
         yield env.timeout(self.packet[0].rectime)
-        self.transmittingState = 0
+        self.tx_activity["active"] = False
         
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
@@ -765,7 +776,8 @@ class node():
                 lastPacketGenTime = env.now
                 break
 
-            self.transmittingState = 1
+            self.tx_activity["active"] = True
+            self.tx_activity["start"] = env.now
             self.sent = self.sent + 1
             self.tx_status_file.write(str(env.now))
 
@@ -812,7 +824,7 @@ class node():
             
             # air time (take first packet rectime)
             yield env.timeout(self.packet[0].rectime)
-            self.transmittingState = 0
+            self.tx_activity["active"] = False
             self.tx_status_file.write(" "+str(env.now)+"\n")
             
             if(realtime_graphics  and graphics):
@@ -995,7 +1007,8 @@ class node():
                 yield env.timeout(random.expovariate(1.0/float(self.packet[0].rectime*repeatDelayMultiplier)))
 
         
-        self.transmittingState = 1 #starting transmission
+        self.tx_activity["active"] = True #starting transmission
+        self.tx_activity["start"] = env.now
         self.tx_status_file.write(str(env.now))
         self.batteryUpdate(env, self.currentTx)
 
@@ -1042,7 +1055,7 @@ class node():
         
         # air time (take first packet rectime)
         yield env.timeout(self.packet[0].rectime)
-        self.transmittingState = 0
+        self.tx_activity["active"] = False
         self.tx_status_file.write(" "+str(env.now)+"\n")
         self.batteryUpdate(env, self.currentCad)
         

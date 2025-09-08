@@ -332,7 +332,7 @@ if __name__ == "__main__":
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
     parser.add_argument("-avg_send_time"             , default=2000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=10000 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()
