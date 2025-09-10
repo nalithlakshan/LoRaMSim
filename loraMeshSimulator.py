@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.image as mpimg
 
+# Simpy environment
+env = simpy.Environment()
+
 # Debug Mode
 debug = 1
 
@@ -37,12 +40,7 @@ repeater_role_changes = 0
 avgSendTime = 600000 #in ms 
 repeatDelayMultiplier = 5 #mean repeater waiting period = airtime * repeatDelayMultiplier 
 
-# experiments:
-# 0: packet with longest airtime, aloha-style experiment
-# 1: one with 3 frequencies, 1 with 1 frequency
-# 2: with shortest packets, still aloha-style
-# 3: with shortest possible packets depending on distance
-experiment = 11
+experiment = 1
 
 # These are arrays with measured values for sensitivity
 #---------------SF---125-----250-----500----(BW in kHz)
@@ -51,10 +49,65 @@ sf8  = np.array([8, -127.25,-126.75,-124.00])
 sf9  = np.array([9, -131.25,-128.25,-127.50])
 sf10 = np.array([10,-132.75,-130.25,-128.75])
 sf11 = np.array([11,-134.50,-132.75,-128.75])
-# sf12 = np.array([12,-133.25,-132.25,-132.25])
 sf12 = np.array([12,-134.50,-132.25,-132.25])
 
+sensi = np.array([sf7,sf8,sf9,sf10,sf11,sf12])
+sf = 7
+bw = 500
+bw_index = {125: 1, 250: 2, 500: 3}
+minsensi = sensi[sf-7][bw_index[bw]] #if SF, BW unknown, use -112.0dB for minsensi
+
+#Path loss function parameters
+Ptx = 14
+gamma = 2.08
+d0 = 40.0
+var = 0  # variance ignored for now
+Lpld0 = 127.41
+GL = 0
+Lpl = Ptx - minsensi
+maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma))) #CORRECTED MISTAKE HERE: REPLACED 'e' with 10
+print ("amin", minsensi, "Lpl", Lpl)
+print ("maxDist:", maxDist)
+xmax = 0
+ymax = 0
+
+#Graphic related variables
+timePlot = None
+txInfoPlot = None
+transmittingNodeIDs = []
+colInfoPlot = None
+
+# prepare graphics and add sink
+if (graphics == 1):
+    plt.ion()
+    plt.figure()
+    ax = plt.gcf().gca()
+
+# global value of packet sequence numbers
+packetSeq = 0
+totalSimPackets = 20
+lastPacketGenTime = 0
+
+# list of nodes
+nodes = []
+repeaterProcessingTime = 100
+# maximum number of packets the node rx can receive at the same time
+maxRxReceives = 8
+
+# list of received packets (accounting reception at all the nodes)
+collidedPackets=[]
+lostPackets = []
+#global packet seq numbers received at gateways
+packetsRecBS = []
+Q1_time = 0
+Q2_time = 0
+Q3_time = 0
+predicted_DER = 1
+packetLatencies = []
+
+# ----------------------------------------------------------------------------------
 #COLLISION CHECK
+# ----------------------------------------------------------------------------------
 def checkcollision(packet, receiverNode):
 
     col = 0  #collision flag
@@ -337,9 +390,14 @@ class node():
         self.x = x
         self.y = y
         self.type = type #3 TYPES: end device(ed), repeater(rp), gateway(gw)
+        self.mode = "RX" #Can be "SLEEP", "CAD", "RX", "TX"
+
+        #position and routing info
         self.distanceValue = -1
         self.nextRp = -1
         self.nextRpOriginal = -1
+        self.neighbor_ids = []
+        self.neighbor_rssi = []
 
         #Tx antenna state
         self.tx_activity = {
@@ -362,10 +420,7 @@ class node():
         self.currentRx = 50 #mA
         self.currentTx = 5000 #mA
         self.currentCad = 1 #mA
-
-        #local neighbourhood awareness
-        self.neighbor_ids = []
-        self.neighbor_rssi = []
+        self.cadPeriodity = 1000 #in ms
 
         # properties common for all types
         self.antennaType = "single"  #single/dual
@@ -405,14 +460,14 @@ class node():
         if (graphics == 1):
             global ax
             if  (self.type.lower() == "ed"):
-                ax.add_artist(plt.Circle((self.x, self.y), 2, fill=True, color='blue'))
-                ax.add_artist(plt.text(self.x+6,self.y,self.id))
+                self.icon = ax.add_artist(plt.Circle((self.x, self.y), 2, fill=True, color='blue'))
+                self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
             elif(self.type.lower() == "rp"):
-                ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='green'))
-                ax.add_artist(plt.text(self.x+11,self.y,self.id))
+                self.icon = ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='green'))
+                self.label = ax.add_artist(plt.text(self.x+11,self.y,self.id))
             elif(self.type.lower() == "gw"):
-                ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='red'))
-                ax.add_artist(plt.text(self.x+11,self.y,self.id))
+                self.icon = ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='red'))
+                self.label = ax.add_artist(plt.text(self.x+11,self.y,self.id))
             else:
                 print("Incorrect device type!")
 
@@ -466,98 +521,19 @@ class node():
         #cr =1,2,3,or 4
         #cr = 1 corresponds to coding rate 4/5 and cr=4 corresponds to coding rate 4/8
         # 4/8 coding rate means that for every 4 bits of useful information the coder generates 8bits of data including error correction bits
-        # determining tx LoRa params       
-        if(experiment == 0):
-            sf = 12
-            cr = 2
-            bw = 125
-            freq = 915900000
-
-        if(experiment == 1):
-            sf = 12
-            cr = 2
-            bw = 125
-            freq = 915900000
-            if (self.type.lower() == "ed"):
-                freq = 917500000
-        
-        
-        elif(experiment == 2):
+        # determining tx LoRa params  
+        if(experiment == 1):     
             sf = 7
-            cr = 2
             bw = 500
-            freq = 915900000
-
-
-        elif(experiment == 3):
-            sf = 7
             cr = 2
-            bw = 500
-            freq = 915900000
+            freq = 915900000 # Data channel for repeaters
             if (self.type.lower() == "ed"):
-                freq = 917500000
+                freq = 917500000 #Data channel for end devices
+            if (packetType == "WOR_up" or packetType == "WOR_down"):
+                freq = 916200000 #WOR channel
 
-        if(experiment == 4):
-            sf = 12
-            cr = 2
-            bw = 500
-            freq = 915900000
-        
-        if(experiment == 5):
-            sf = 11
-            cr = 2
-            bw = 500
-            freq = 915900000
-
-        if(experiment == 6):
-            sf = 10
-            cr = 2
-            bw = 500
-            freq = 915900000
-
-        if(experiment == 7):
-            sf = 9
-            cr = 2
-            bw = 500
-            freq = 915900000
-
-        if(experiment == 8):
-            sf = 8
-            cr = 2
-            bw = 500
-            freq = 915900000
-
-        if(experiment == 9):
-            sf = 7
-            cr = 2
-            bw = 500
-            freq = 915900000
-
-        if(experiment == 10):
-            sf = 12
-            cr = 2
-            bw = 500
-            freq = 915900000
-            if (self.type.lower() == "ed"):
-                freq = 917500000
-
-        if(experiment == 11):
-            sf = 7
-            cr = 2
-            bw = 500
-            freq = 915900000
-            if (self.type.lower() == "ed"):
-                freq = 917500000
-        
-        elif(experiment == 40):
-            #incomplete
-            freq = random.choice([860000000, 864000000, 868000000])
-        
-        elif(experiment == 50):
-            sf = random.randint(6,12)
-            cr = random.randint(1,4)
-            bw = random.choice([125, 250, 500])
-            freq = random.choice([860000000, 864000000, 868000000])
+        # Here more experiments with different parameters can be added
+        # ...
    
         # create virtual packets for each other node
         self.packet = []
@@ -918,7 +894,7 @@ class node():
                 
                 if(self.distanceValue < prevDistanceValue or prevDistanceValue == -1):
                     
-                    packetInfo = [seqNr, packetlen, standby]
+                    packetInfo = [seqNr, packetlen]
                     
                     if(standby_repeater_algo):           
                         if(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and self.distanceValue>nodes[nextRp].distanceValue and self.distanceValue<nodes[prevRp].distanceValue):
@@ -940,13 +916,13 @@ class node():
                             with self.nTransmitters.request() as req:
                                 yield req
                                 packetInfoOut = yield self.packetsFifo.get()
-                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[2]))
+                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
                     else:
                         self.packetsFifo.put(packetInfo)
                         with self.nTransmitters.request() as req:
                             yield req
                             packetInfoOut = yield self.packetsFifo.get()
-                            yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[2]))
+                            yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
            
 
 
@@ -956,7 +932,7 @@ class node():
                 with self.nTransmitters.request() as req:
                     yield req
                     packetInfoOut = yield self.packetsFifo.get()
-                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[2]))
+                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
 
 
     def standbyMode(self, env, packetInfo, standByTime, prevRp):
@@ -986,23 +962,32 @@ class node():
 
                 standby_retains += 1
                 return 0
-
-        #Hard Code ???
-        if(self.id == 1 or self.id ==17):
-            print("EEEEERRRRRORRRR!!!!!")
-        #     return 0
-        # if(nodes[self.nextRp].type.lower() == "gw"):
-        #     return 0
         
         standby_recoveries += 1
         self.packetsFifo.put(packetInfo)
         with self.nTransmitters.request() as req:
             yield req
             packetInfoOut = yield self.packetsFifo.get()
-            yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[2]))
+            yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+            return 1
+        
+    def cadMode(self, env):
+        self.batteryUpdate(env, self.currentCad)
+        #Node performing periodic CAD scans while sleeping
+        while(True):
+            # CAD Scan: Checking WOR channel activity
+            for node in self.packetSourcesAtRx:
+                if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
+                    self.batteryUpdate(env, self.currentRx)
+                    self.mode = "RX"
+                    if(debug):
+                        print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
+                    break  # Exit CAD mode if WOR packet is detected during preamble
+            
+            yield env.timeout(self.cadPeriodity)
 
 
-    def repeat(self, env, seqNr, packetlen, standby):
+    def repeat(self, env, seqNr, packetlen):
         global nodes
         global packetsRecBS
         global collidedPackets
@@ -1222,96 +1207,3 @@ class Graph():
         
         self.printSolution(dist, src)
         return dist
-
-
-# ----------------------------------------------------------------------------------
-# "main" program
-# ----------------------------------------------------------------------------------
-
-# global stuff
-env = simpy.Environment()
-
-# global value of packet sequence numbers
-packetSeq = 0
-totalSimPackets = 20
-lastPacketGenTime = 0
-
-# list of nodes
-nodes = []
-repeaterProcessingTime = 100
-# maximum number of packets the node rx can receive at the same time
-maxRxReceives = 8
-
-# list of received packets (accounting reception at all the nodes)
-collidedPackets=[]
-lostPackets = []
-#global packet seq numbers received at gateways
-packetsRecBS = []
-Q1_time = 0
-Q2_time = 0
-Q3_time = 0
-predicted_DER = 1
-packetLatencies = []
-
-
-#Graphic related variables
-timePlot = None
-txInfoPlot = None
-transmittingNodeIDs = []
-colInfoPlot = None
-
-#Path loss function parameters
-Ptx = 14
-gamma = 2.08
-d0 = 40.0
-var = 0  # variance ignored for now
-Lpld0 = 127.41
-GL = 0
-
-sensi = np.array([sf7,sf8,sf9,sf10,sf11,sf12])
-
-## figure out the minimal sensitivity for the given experiment
-minsensi = -200.0
-if experiment in [0,1]:
-    minsensi = sensi[5,1]  # 6th row is SF12, 2nd column is BW125
-
-elif experiment in [2,3]:
-    minsensi = sensi[0][3] # 1st row is SF7, 4th column is BW500
-
-elif experiment == 4:
-    minsensi = sensi[5][3] # 6th row is SF12, 4th column is BW500
-elif experiment == 5:
-    minsensi = sensi[4][3] # 5th row is SF11, 4th column is BW500
-elif experiment == 6:
-    minsensi = sensi[3][3] # 4th row is SF10, 4th column is BW500
-elif experiment == 7:
-    minsensi = sensi[2][3] # 3th row is SF9, 4th column is BW500
-elif experiment == 8:
-    minsensi = sensi[1][3] # 2th row is SF8, 4th column is BW500
-elif experiment == 9:
-    minsensi = sensi[0][3] # 1st row is SF7, 4th column is BW500
-
-elif experiment == 10:
-    minsensi = sensi[5][3] # 6th row is SF12, 4th column is BW500
-elif experiment == 11:
-    minsensi = sensi[0][3] # 1st row is SF7, 4th column is BW500
-
-    # minsensi = -112.0   # no experiments, so value from datasheet
-
-# elif experiment == [3, 5]:
-#     minsensi = np.amin(sensi) ## can use any setting, so take minimum
-
-Lpl = Ptx - minsensi
-maxDist = d0*(10**((Lpl-Lpld0)/(10.0*gamma))) #CORRECTED MISTAKE HERE: REPLACED 'e' with 10
-print ("amin", minsensi, "Lpl", Lpl)
-print ("maxDist:", maxDist)
-
-xmax = 0
-ymax = 0
-
-# prepare graphics and add sink
-if (graphics == 1):
-    plt.ion()
-    plt.figure()
-    ax = plt.gcf().gca()
-

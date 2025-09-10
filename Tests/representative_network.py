@@ -40,7 +40,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 1
+    sim.realtime_graphics = 0
     sim.debug = 0
 
     sim.positional_algo = True
@@ -193,12 +193,12 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
 
     #Sensor Network
-    # for i in range(len(nodes)):
-    #     if (nodes[i].type.lower() == "ed"):
-    #         env.process(nodes[i].transmit(env))
+    for i in range(len(nodes)):
+        if (nodes[i].type.lower() == "ed"):
+            env.process(nodes[i].transmit(env))
     #For Energy Aware Mechanism Testing
-    env.process(nodes[28].transmit(env))
-    env.process(nodes[31].transmit(env))
+    # env.process(nodes[28].transmit(env))
+    # env.process(nodes[31].transmit(env))
     
 
     #prepare show
@@ -215,7 +215,6 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     #Print simulation stat
     print ("No of nodes: ", len(nodes)) #FIX
     print ("AvgSendTime (exp. distributed):",sim.avgSendTime)
-    print ("Experiment: ", sim.experiment)
     print ("Simulation Time: ",env.now/60000,"mins")
     print ("Full Collision: ", sim.full_collision)
     print ("Air time: ", sim.nodes[1].packet[0].rectime)
@@ -331,8 +330,8 @@ if __name__ == "__main__":
     
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
-    parser.add_argument("-avg_send_time"             , default=2000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-avg_send_time"             , default=2500 , help="Average time period of an end-device sending a packet")
+    parser.add_argument("-total_sim_packets"         , default=5000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()
