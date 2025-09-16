@@ -26,10 +26,11 @@ full_collision = True
 carrier_sensing_ed = False
 carrier_sensing_rp = True 
 
-#global awareness
+#global awareness, routing, sleep algorithms
 positional_algo = True
 standby_repeater_algo = True
 energy_aware_algo = True
+repeater_sleep_algo = False
 
 total_stanby = 0
 standby_retains = 0
@@ -104,6 +105,9 @@ Q2_time = 0
 Q3_time = 0
 predicted_DER = 1
 packetLatencies = []
+
+# WOR and CAD related
+nodeClockAccuracy = 2.5 #ppm
 
 # ----------------------------------------------------------------------------------
 #COLLISION CHECK
@@ -303,16 +307,22 @@ def run_position_learning():
     print(g.graph)
 
     distFromGWs = []
+    idsOfGWs = []
     for i in range(len(mainNodes)):
         if(mainNodes[i].type == "gw"):
             distFromGWs.append(g.dijkstra(i))
+            idsOfGWs.append(i)
 
     dist = [1e7 for x in range(len(mainNodes))]
-
+    nearestGW = [0 for x in range(len(mainNodes))]
+    k=0
     for distset in distFromGWs:
+        gwId = idsOfGWs[k]
         for i in range(len(dist)):
             if(distset[i]<dist[i]):
                 dist[i] = distset[i]
+                nearestGW[i] = gwId
+        k += 1
 
     # print("\nNode \t Distance from nearest GW")
     # for i in range(len(dist)):
@@ -329,13 +339,14 @@ def run_position_learning():
                 nextNodeUpDist = d
                 nextNodeUp[i] = mainNodes[i].neighbor_ids[j]
 
-    k = 0
+    m = 0
     for i in range(len(nodes)):
         if(nodes[i].type == "rp" or nodes[i].type == "gw"):
-            nodes[i].nextRp = nextNodeUp[k]
-            nodes[i].nextRpOriginal = nextNodeUp[k]
-            nodes[i].distanceValue = dist[k]
-            k = k + 1
+            nodes[i].nextRp = nextNodeUp[m]
+            nodes[i].nextRpOriginal = nextNodeUp[m]
+            nodes[i].distanceValue = dist[m]
+            nodes[i].nearestGwId = nearestGW[m]
+            m = m + 1
 
 
     # print("\nNode \t Next RP/GW (Upstream) \t  Neighbours")
@@ -444,6 +455,13 @@ class node():
         self.standbyBuffer = []
         self.lowerDistanceRecBuffer = []
         self.txTimePercentage = 0
+        self.nearestGwId = -1
+
+        # WOR and CAD related
+        self.lastCadScanTime = 0
+        global nodeClockAccuracy
+        self.clockAccuracy = random.uniform(-nodeClockAccuracy,nodeClockAccuracy)/1000000
+
 
         #data dump files
         tx_status_file_name = 'tx status data\dump_node_'+ str(self.id)+'.txt'       
@@ -742,8 +760,20 @@ class node():
 
     #only for the transmission by end-devices
     def transmit(self, env):
+        global packetSeq
+        global lastPacketGenTime
+        global totalSimPackets
+        global nodes
+        global lostPackets
+        global collidedPackets
+        global fignum
+        self.mode = "CAD"
+        self.batteryUpdate(env, self.currentCad)
+
         while(True):
             yield env.timeout(random.expovariate(1.0/float(self.period)))
+            self.mode = "RX"
+            self.batteryUpdate(env, self.currentRx)
 
             #carrier sensing
             if(carrier_sensing_ed ==1): 
@@ -752,29 +782,33 @@ class node():
                     if(debug):
                         print("ED: waiting till medium is idle")
             
-
-            global packetSeq
-            global lastPacketGenTime
+            self.mode = "TX"
+            self.batteryUpdate(env, self.currentTx)
             packetSeq = packetSeq + 1
 
-            global totalSimPackets
             if (packetSeq > totalSimPackets):
                 lastPacketGenTime = env.now
                 break
 
-            self.tx_activity["active"] = True
-            self.createPackets("DATA_up")
-            self.tx_activity["start"] = env.now
-            self.tx_activity["end"] = env.now + self.packet[0].rectime
-            self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-            self.tx_activity["tx_packet_type"] = "DATA_up"
-            self.sent = self.sent + 1
-            self.tx_status_file.write(str(env.now))
-
-            global nodes
-            global lostPackets
-            global collidedPackets
-            global fignum
+            if(repeater_sleep_algo):
+                #first send WORed then data packet
+                self.tx_activity["active"] = True
+                self.createPackets("WOR_up", 1000)
+                self.tx_activity["start"] = env.now
+                self.tx_activity["end"] = env.now + self.packet[0].rectime
+                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                self.tx_activity["tx_packet_type"] = "DATA_up"
+                self.sent = self.sent + 1
+                self.tx_status_file.write(str(env.now))
+            else:
+                self.tx_activity["active"] = True
+                self.createPackets("DATA_up")
+                self.tx_activity["start"] = env.now
+                self.tx_activity["end"] = env.now + self.packet[0].rectime
+                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                self.tx_activity["tx_packet_type"] = "DATA_up"
+                self.sent = self.sent + 1
+                self.tx_status_file.write(str(env.now))
 
             if(debug):
                 print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}")
@@ -971,20 +1005,31 @@ class node():
             yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
             return 1
         
-    def cadMode(self, env):
+    def enableCad(self, env):
+        self.mode = "CAD"
         self.batteryUpdate(env, self.currentCad)
-        #Node performing periodic CAD scans while sleeping
+        # if((env.now - self.lastCadScanTime)%self.cadPeriodity != 0):
+        #     yield env.timeout(self.cadPeriodity - (env.now - self.lastCadScanTime)%self.cadPeriodity)
+
         while(True):
-            # CAD Scan: Checking WOR channel activity
-            for node in self.packetSourcesAtRx:
-                if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
-                    self.batteryUpdate(env, self.currentRx)
-                    self.mode = "RX"
-                    if(debug):
-                        print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
-                    break  # Exit CAD mode if WOR packet is detected during preamble
-            
-            yield env.timeout(self.cadPeriodity)
+
+            if(self.mode == "CAD"):
+                # CAD Scan: Checking WOR channel activity
+                self.lastCadScanTime = env.now
+                # if(debug):
+                #     print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Performing CAD Scan. [clock accuracy: {self.clockAccuracy*1000000:.2f} ppm]")
+                for node in self.packetSourcesAtRx:
+                    if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
+                        self.mode = "RX"
+                        self.batteryUpdate(env, self.currentRx)
+                        if(debug):
+                            print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
+
+            yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
+
+            #Exit CAD function after the end of the simulation
+            if(lastPacketGenTime!= 0 and env.now > (lastPacketGenTime + 3600000)):
+                break
 
 
     def repeat(self, env, seqNr, packetlen):
@@ -1108,8 +1153,8 @@ class node():
 # this creates a packet associated between a pair of nodes
 #
 class myPacket():
-    def __init__(self, nodeid, plen, distance, rxNodeId,
-                 txPower=14, sf=12, cr=4, bw=125, freq=860000000, packetType="OTHER", premlen=8):
+    def __init__(self, nodeid, payloadLen, distance, rxNodeId,
+                 txPower=14, sf=12, cr=4, bw=125, freq=860000000, packetType="OTHER", premlen=8, intendedRxNodeId = -1):
         global experiment
         global gamma
         global d0
@@ -1120,8 +1165,11 @@ class myPacket():
         global nodes
         self.seqNr = None
         self.rxNodeId = rxNodeId
+        self.intendedRxNodeId = intendedRxNodeId
         self.nodeid = nodeid
-        self.pl = plen
+        self.nearestGwId = nodes[nodeid].nearestGwId
+        self.payloadLen = payloadLen
+        self.preambleLen = premlen
         self.packetType = packetType
 
         #LoRa Parameters
@@ -1149,12 +1197,8 @@ class myPacket():
             minsensi = sensi[self.sf-7][3]
         self.lost = self.rssi < minsensi
 
-        self.Tprem, self.Tpayload = airtime(self.sf,self.cr,self.pl,self.bw)
-        if(premlen == 8):
-            self.rectime = self.Tprem + self.Tpayload
-        else:
-            self.Tprem = self.symTime * (premlen + 4.25)
-            self.rectime = self.Tprem + self.Tpayload
+        self.Tprem, self.Tpayload = airtime(self.sf,self.cr,self.payloadLen,self.bw, self.preambleLen)
+        self.rectime = self.Tprem + self.Tpayload
 
 
         global debug
@@ -1165,7 +1209,7 @@ class myPacket():
             print ("  Lpl: ",Lpl)
             print ("  Prx: ", self.rssi)
             print ("  MinSensi: ",minsensi)
-            print ("  Pkt Length: ",self.pl)
+            print ("  Pkt Length: ",self.payloadLen)
             print ("  Freq: ", self.freq)
             print ("  SF:",self.sf," BW:",self.bw," CR:",self.cr)       
 
