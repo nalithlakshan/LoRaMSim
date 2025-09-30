@@ -493,10 +493,10 @@ class node():
                 self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
             elif(self.type.lower() == "rp"):
                 self.icon = ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='green'))
-                self.label = ax.add_artist(plt.text(self.x+11,self.y,self.id))
+                self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
             elif(self.type.lower() == "gw"):
                 self.icon = ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='red'))
-                self.label = ax.add_artist(plt.text(self.x+11,self.y,self.id))
+                self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
             else:
                 print("Incorrect device type!")
 
@@ -594,13 +594,13 @@ class node():
         if(packetType == "WOR_up" or packetType == "WOR_down"):
             for i in range(0,len(nodes)):
                 if(self.type.upper() == "ED"):
-                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
+                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, Ptx/2, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
                 else:
                     self.packet.append(myPacket(self.id, 15, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
         else:
             for i in range(0,len(nodes)):
                 if(self.type.upper() == "ED"):
-                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
+                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx/2, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
                 else:
                     self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
 
@@ -698,7 +698,8 @@ class node():
 
         colInfoString = ""
         for pk in colPktObjects:
-            colInfoString += f"Node {pk.nodeid} to Node {pk.rxNodeId} transmission collided\n"
+            if(pk.nodeid != pk.rxNodeId):
+                colInfoString += f"Node {pk.nodeid} to Node {pk.rxNodeId} transmission collided\n"
 
         if(colInfoPlot != None):
             colInfoPlot.remove()
@@ -717,6 +718,12 @@ class node():
             self.setIconColorByMode(get_linenumber())
             yield env.timeout(random.expovariate(1.0/float(self.period)))
 
+            packetSeq = packetSeq + 1
+
+            if (packetSeq > totalSimPackets):
+                lastPacketGenTime = env.now
+                break
+
             self.mode = "RX"
             self.batteryUpdate(env, self.currentRx)
             self.setIconColorByMode(get_linenumber())
@@ -728,18 +735,12 @@ class node():
                     # if(debug):
                     #     print("ED: waiting till medium is idle")
 
-            packetSeq = packetSeq + 1
-
-            if (packetSeq > totalSimPackets):
-                lastPacketGenTime = env.now
-                break
-
             # $$$$$$$$$$$$$$$$$
-            # if(packetSeq == 980):
-            #     global realtime_graphics
-            #     global debug
-            #     realtime_graphics = 1
-            #     debug = 1
+            if(packetSeq == 95):
+                global realtime_graphics
+                global debug
+                realtime_graphics = 1
+                debug = 1
             
             if(repeater_sleep_algo):
                 if(self.worAckReceived == -1):
@@ -913,6 +914,8 @@ class node():
 
         if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[packet.nodeid].type.lower() != "ed"):
             if(nodes[packet.nodeAcknowledged].type.lower() == "ed" and self.awaitingToSendWorAck ==1 and (packet.nodeAcknowledged in self.toWhichEdAmIAwaitingToSendAck)):
+                if(debug):
+                    print("Rp:",self.id,"backing off without sending a WOR-ACK to ED:",packet.nodeAcknowledged)
                 self.toWhichEdAmIAwaitingToSendAck.remove(packet.nodeAcknowledged)
                 if len(self.toWhichEdAmIAwaitingToSendAck) == 0:
                     self.awaitingToSendWorAck = 0
@@ -1036,6 +1039,10 @@ class node():
                                 while(len(self.packetSourcesAtRx) != 0):
                                     yield env.timeout(1)
 
+                            if((self.worAckReceived == 1 or self.awaitingToSendWorAck == 0) and pktType=="WOR_up"):
+                                if(debug):
+                                    print(f"Node {self.id} not sending WOR ACK to ED {edId} as it already received ACK or is not expecting any ACK")
+                                return 0
                             self.tx_activity["active"] = True
                             self.createPackets(pktType, -1, self.nextRp, packetInfoOut[1], packetInfoOut[0], round(env.now, 1))
                             self.tx_activity["start"] = env.now
@@ -1142,6 +1149,9 @@ class node():
 
                                         elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
                                             return 0
+                                        
+                                        # elif(packet.packetType=="WOR_up" and self.worAckReceived==1):
+                                        #     return 0
 
                                         self.packetsFifo.put(packetInfo)
                                         with self.nTransmitters.request() as req:
@@ -1265,6 +1275,9 @@ class node():
         
 
     def enableCad(self, env):
+        global repeater_sleep_algo
+        if(repeater_sleep_algo==0):
+            return 0
         self.mode = "CAD"
         self.batteryUpdate(env, self.currentCad)
         self.setIconColorByMode(get_linenumber())

@@ -78,77 +78,33 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     repeaters.append(node(env, 2.33*d, 2.66*d, "rp"))
     gw2 = sim.node(env, 2.33*d, 3.00*d, "gw")
     
-
     no_of_repeaters = len(repeaters)
 
 
     #End devices
-    enddevices.append(node(env, 5.50*d, 1.09*d, "ed"))
-    enddevices.append(node(env, 5.00*d, 1.09*d, "ed"))
-    enddevices.append(node(env, 4.50*d, 1.09*d, "ed"))
-    enddevices.append(node(env, 4.00*d, 1.09*d, "ed")) #junction 1
-    enddevices.append(node(env, 3.50*d, 1.09*d, "ed")) 
-    enddevices.append(node(env, 3.00*d, 1.09*d, "ed"))
-    enddevices.append(node(env, 2.66*d, 1.09*d, "ed"))
-    enddevices.append(node(env, 2.33*d, 1.09*d, "ed")) #junction 2
-    enddevices.append(node(env, 2.00*d, 1.09*d, "ed")) 
-    enddevices.append(node(env, 1.66*d, 1.09*d, "ed"))
-
+    enddevices.append(node(env, 5.40*d, 0.80*d, "ed"))
+    enddevices.append(node(env, 4.90*d, 1.15*d, "ed"))
+    enddevices.append(node(env, 4.55*d, 1.20*d, "ed"))
+    enddevices.append(node(env, 4.20*d, 0.90*d, "ed")) #junction 1
+    enddevices.append(node(env, 3.30*d, 0.90*d, "ed")) 
+    enddevices.append(node(env, 3.00*d, 1.20*d, "ed"))
+    enddevices.append(node(env, 2.60*d, 1.10*d, "ed"))
+    enddevices.append(node(env, 2.25*d, 0.80*d, "ed")) #junction 2
+    enddevices.append(node(env, 1.90*d, 1.10*d, "ed")) 
+    enddevices.append(node(env, 1.50*d, 0.85*d, "ed"))
    
-    enddevices.append(node(env, 4.00*d, 1.59*d, "ed")) #branch at j1
-    enddevices.append(node(env, 4.00*d, 2.09*d, "ed"))
-    enddevices.append(node(env, 4.00*d, 2.59*d, "ed"))
+    enddevices.append(node(env, 4.10*d, 1.40*d, "ed")) #branch at j1
+    enddevices.append(node(env, 4.20*d, 2.15*d, "ed"))
+    enddevices.append(node(env, 3.80*d, 2.60*d, "ed"))
 
-    enddevices.append(node(env, 2.25*d, 1.50*d, "ed")) #branch at j2
-    enddevices.append(node(env, 2.25*d, 2.00*d, "ed"))
-    enddevices.append(node(env, 2.25*d, 2.33*d, "ed"))
-    enddevices.append(node(env, 2.25*d, 2.66*d, "ed"))
+    enddevices.append(node(env, 2.35*d, 1.60*d, "ed")) #branch at j2
+    enddevices.append(node(env, 2.25*d, 1.85*d, "ed"))
+    enddevices.append(node(env, 2.55*d, 2.25*d, "ed"))
+    enddevices.append(node(env, 2.10*d, 2.60*d, "ed"))
 
-
-    # # #Setting distance values of Position Manually
-    # nodes[0].distanceValue  = 0
-    # nodes[1].distanceValue  = 40.395
-    # nodes[2].distanceValue  = 85.577
-    # nodes[3].distanceValue  = 124.27
-    # nodes[4].distanceValue  = 170.45
-    # nodes[5].distanceValue  = 218.14 
-    # nodes[6].distanceValue  = 199.87
-    # nodes[7].distanceValue  = 175.31
-    # nodes[8].distanceValue  = 166.35
-    # nodes[9].distanceValue  = 175.91 
-    # nodes[10].distanceValue = 194.42
-    # nodes[11].distanceValue = 193.34
-    # nodes[12].distanceValue = 242.02
-    # nodes[13].distanceValue = 289.93 
-    # nodes[14].distanceValue = 123.34
-    # nodes[15].distanceValue = 81.973
-    # nodes[16].distanceValue = 59.560
-    # nodes[17].distanceValue = 28.255 
-    # nodes[18].distanceValue = 0
+    no_of_enddevices = len(enddevices)
 
 
-    # # #routing
-    # nodes[0].nextRp = 0
-    # nodes[1].nextRp = 0
-    # nodes[2].nextRp = 0
-    # nodes[3].nextRp = 1
-    # nodes[4].nextRp = 2
-    # nodes[5].nextRp = 3
-    # nodes[6].nextRp = 14
-    # nodes[7].nextRp = 14
-    # nodes[8].nextRp = 15
-    # nodes[9].nextRp = 14
-    # nodes[10].nextRp = 14
-    # nodes[11].nextRp = 3
-    # nodes[12].nextRp = 4
-    # nodes[13].nextRp = 11
-    # nodes[14].nextRp = 16
-    # nodes[15].nextRp = 18
-    # nodes[16].nextRp = 18
-    # nodes[17].nextRp = 18
-    # nodes[18].nextRp = 18
-
-    
     sim.networkConfig()
 
     print("Node 0 distanceValue:", nodes[0].distanceValue)
@@ -198,11 +154,6 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
             env.process(nodes[i].endDeviceStateMachine(env))
         if (nodes[i].type.lower() == "rp"):
             env.process(nodes[i].enableCad(env))
-    #For Energy Aware Mechanism Testing
-    # env.process(nodes[28].transmit(env))
-    # env.process(nodes[1].enableCad(env))
-    # env.process(nodes[2].enableCad(env))
-
 
     #prepare show
     if (sim.graphics == 1):
@@ -222,9 +173,6 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     print ("Full Collision: ", sim.full_collision)
     print ("Air time: ", sim.nodes[1].packet[0].rectime)
 
-    # data extraction rate
-    der = len(sim.packetsRecBS)/float(sim.totalSimPackets)
-    print("\nOverall DER:", der)
 
     #Average Latency
     sum_of_latencies = 0
@@ -237,41 +185,75 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     print("Minimum Latency:",sim.packetLatencies[0],"ms")
     print("Maximum Latency:",sim.packetLatencies[-1],"ms")
 
-    print("\n Received/Repeated Packets by Each Repeater")
+    print("\n Initial Packet Transmission Successes & Failures by Each End-Device")
+    total_pkts_rec_by_bs = 0
+    total_ed_tx_pkts = 0
     total_ed_tx_successes = 0
     total_ed_tx_losses = 0
+    total_intermediate_losses = 0
     total_power_consumption = 0
+
+    for i in range(no_of_enddevices):
+        ed = enddevices[i]
+        ed_tx_pkts = 0
+        ed_tx_successes = 0
+
+        for pkt in ed.txPackets:
+            edId,packetSeq,genTime,pktType =pkt.split("|")
+            if(pktType=="DATA_up"):
+                total_ed_tx_pkts += 1
+                ed_tx_pkts += 1
+
+                ed_tx_successful = 0
+                for j in range(no_of_repeaters):
+                    rp = repeaters[j]
+                    if(pkt in rp.txPackets or pkt in sim.packetsRecBS):
+                        ed_tx_successful = 1
+                        ed_tx_successes += 1
+                        total_ed_tx_successes += 1
+                        break
+
+                if(pkt in sim.packetsRecBS):
+                    total_pkts_rec_by_bs += 1
+                elif(ed_tx_successful):
+                    total_intermediate_losses += 1
+        
+        ed_tx_losses = ed_tx_pkts - ed_tx_successes
+        if(ed_tx_pkts>0):
+            print("ED", ed.id, "Sent Pkts:", ed_tx_pkts)
+            print("ED", ed.id, "Pkts successfully captured by nearby repeater(s):", ed_tx_successes)
+            print("ED", ed.id, "Pkts failed to be captured by nearby repeater(s):", ed_tx_losses)
+            print("ED", ed.id, "percentage of initial Pkt transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%\n")
+                    
+    total_ed_tx_losses = total_ed_tx_pkts - total_ed_tx_successes
+
     for i in range(no_of_repeaters):
         rp = repeaters[i]
-        ed = enddevices[i]
-        
-        ed_tx_pkts = len(ed.txPackets)
-        ed_tx_successes = len([x for x in ed.txPackets if x in rp.recPackets])
-        ed_tx_losses = ed_tx_pkts - ed_tx_successes
-        total_ed_tx_successes += ed_tx_successes
-        total_ed_tx_losses += ed_tx_losses
+        pkts_rec_by_rp = 0
+        pkts_fwd_by_rp = 0
         total_power_consumption += rp.batteryCapacity - rp.batteryRemaining
-        if(len(ed.txPackets)>0):
-            if(len(ed.txPackets) <5):
-                print("ED", ed.id, "Sent Pkts:", ed.txPackets)
-            print("ED", ed.id, "Sent Pkts:", ed_tx_pkts)
-            print("ED", ed.id, "Pkts successfully sent to corresponding repeater:", ed_tx_successes)
-            print("ED", ed.id, "Pkts failed to be captured by corresponding repeater:", ed_tx_losses)
-            print("ED", ed.id, "percentage of initial Pkt transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%")
-        if(len(rp.recPackets) <20):
-            print("RP", rp.id, "Received Pkts:", rp.recPackets)
-        print("RP", rp.id, "Received Pkts:", len(rp.recPackets))
-        print("RP", rp.id, "Repeated Pkts:", len(rp.txPackets))
-        # print("RP", rp.id, "percentage time RP was in Tx state:", round(rp.packet[0].rectime*len(rp.txPackets)/env.now*100,1),"%\n")
-        
 
+        for pkt in rp.recPackets:
+            edId,packetSeq,genTime,pktType =pkt.split("|")
+            if(pktType=="DATA_up"):
+                pkts_rec_by_rp += 1
+        
+        for pkt in rp.txPackets:
+            edId,packetSeq,genTime,pktType =pkt.split("|")
+            if(pktType=="DATA_up"):
+                pkts_fwd_by_rp += 1
+
+        if(len(rp.recPackets) <10):
+            print("RP", rp.id, "Received Pkts:", rp.recPackets)
+        print("RP", rp.id, "Received Pkts:", pkts_rec_by_rp)
+        print("RP", rp.id, "Repeated Pkts:", pkts_fwd_by_rp)
+        print("RP", rp.id, "Battery Consumed:", round(rp.batteryCapacity - rp.batteryRemaining,2), "mAh\n")
     
     print("********************************************")
     print("Total Generated Packets:", total_sim_packets)
-    # total_lost_pkts = total_sim_packets - len(set(gw1.recPackets+gw2.recPackets))
-    total_lost_pkts = total_sim_packets - len(sim.packetsRecBS)
 
-    total_intermediate_losses = total_lost_pkts-total_ed_tx_losses
+    total_lost_pkts = total_sim_packets - total_pkts_rec_by_bs
+
     print("Total Lost Packets:", total_lost_pkts)
     print("---> Lost at initial ED transmission:", total_ed_tx_losses)
     print("---> Lost at intermediate repetition:", total_intermediate_losses, "\n")
@@ -283,19 +265,14 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
     print("\nTotal Power Consumption :", total_power_consumption)
 
+    # data extraction rate
+    der = total_pkts_rec_by_bs/float(total_sim_packets)
     print("\nOverall DER:", der)
 
-    #print RSSI of packets
-    pkt1_tx = 0
-    pkt1_rx = 1
 
-    pkt2_tx = 3
-    pkt2_rx = 1
-    # print("Node",pkt1_tx,"to Node",pkt1_rx,"RSSI:", nodes[pkt1_tx].packet[pkt1_rx].rssi)
-    # print("Node",pkt2_tx,"to Node",pkt2_rx,"RSSI:", nodes[pkt2_tx].packet[pkt2_rx].rssi)
 
     # Append Test to Excel Sheet
-    file_path = "representative_network_sim_outputs_Apr2025.xlsx"
+    file_path = "representative_network_1_sim_outputs.xlsx"
     sheet_name = "Sheet1"
     values_to_append = []
     values_to_append.append(sim.experiment)
@@ -333,7 +310,7 @@ if __name__ == "__main__":
     
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
-    parser.add_argument("-avg_send_time"             , default=360000 , help="Average time period of an end-device sending a packet")
+    parser.add_argument("-avg_send_time"             , default=3600000 , help="Average time period of an end-device sending a packet")
     parser.add_argument("-total_sim_packets"         , default=5000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
