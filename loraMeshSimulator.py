@@ -3,6 +3,7 @@ import random
 import numpy as np
 import math
 import os
+from inspect import currentframe
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.image as mpimg
@@ -23,14 +24,14 @@ slideShowPause = 0.0 #number of seconds to pause OR 0 to wait until key press
 full_collision = True
 
 #carrier sensing
-carrier_sensing_ed = False
+carrier_sensing_ed = True
 carrier_sensing_rp = True 
 
 #global awareness, routing, sleep algorithms
 positional_algo = True
 standby_repeater_algo = True
 energy_aware_algo = True
-repeater_sleep_algo = False
+repeater_sleep_algo = True
 
 total_stanby = 0
 standby_retains = 0
@@ -91,7 +92,7 @@ lastPacketGenTime = 0
 
 # list of nodes
 nodes = []
-repeaterProcessingTime = 100
+repeaterProcessingTime = 10
 # maximum number of packets the node rx can receive at the same time
 maxRxReceives = 8
 
@@ -136,8 +137,8 @@ def checkcollision(packet, receiverNode):
         packet.collided = 1
         packet.processed = 0
         col = 1
-        if(debug):
-            print("   --collision since node",receiverNode.id,"is in transmitting state")
+        if(debug and receiverNode.id!=packet.nodeid):
+            print("   --collision since node",receiverNode.id,"is in transmitting state. Tx Acivity --> {", receiverNode.tx_activity["active"], receiverNode.tx_activity["start"], receiverNode.tx_activity["end"], receiverNode.tx_activity["preamble_duration"], receiverNode.tx_activity["tx_packet_type"],receiverNode.tx_activity["in_preamble"](env) ,"}")
         return col
 
     #checking packet collisions at receiving antenna
@@ -271,7 +272,10 @@ def airtime(sf,cr,pl,bw, premlen=8):
         H = 1
 
     Tsym = (2.0**sf)/bw
-    Tpream = (premlen + 4.25)*Tsym
+    if(premlen == -1): #A preamble equal to CAD Periodicity
+        Tpream = 1000 #ms
+    else: 
+        Tpream = (premlen + 4.25)*Tsym
     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0)
     Tpayload = payloadSymbNB * Tsym
     return Tpream, Tpayload
@@ -348,12 +352,17 @@ def run_position_learning():
             nodes[i].nearestGwId = nearestGW[m]
             m = m + 1
 
-
     # print("\nNode \t Next RP/GW (Upstream) \t  Neighbours")
     # for i in range(len(nextNodeUp)):
     #     print(i, "\t\t", nextNodeUp[i], "\t\t", mainNodes[i].neighbor_ids)
 
-    
+
+
+#debugging function to get current line number
+def get_linenumber():
+    cf = currentframe()
+    return cf.f_back.f_lineno
+
 
 #
 # This is called to configure the network after creating all nodes
@@ -362,8 +371,8 @@ def networkConfig():
     global nodes
     for i in range(len(nodes)):
         nodes[i].createPackets()
-        if(realtime_graphics == 1 and graphics == 1):
-            nodes[i].txArrowPlots = [None] * len(nodes)
+        # if(realtime_graphics == 1 and graphics == 1):
+        nodes[i].txArrowPlots = [None] * len(nodes)
 
     run_position_learning()
     
@@ -402,6 +411,7 @@ class node():
         self.y = y
         self.type = type #3 TYPES: end device(ed), repeater(rp), gateway(gw)
         self.mode = "RX" #Can be "SLEEP", "CAD", "RX", "TX"
+        self.lastStateChangeTime = 0
 
         #position and routing info
         self.distanceValue = -1
@@ -446,13 +456,12 @@ class node():
         self.sent = 0
         self.sentSuccessful = 0
         self.period = avgSendTime
-        self.packetlen = 20
 
         #properties specific to repeaters
         self.packetsFifo = simpy.Store(env)
         self.nTransmitters = simpy.Resource(env, capacity=1)
         self.tx_activity["active"] = False
-        self.standbyBuffer = []
+        self.standbyBufferCount = 0
         self.lowerDistanceRecBuffer = []
         self.txTimePercentage = 0
         self.nearestGwId = -1
@@ -461,7 +470,9 @@ class node():
         self.lastCadScanTime = 0
         global nodeClockAccuracy
         self.clockAccuracy = random.uniform(-nodeClockAccuracy,nodeClockAccuracy)/1000000
-
+        self.worAckReceived = -1    # -1 means not expecting ack, 0 means expecting ack, 1 means ack received
+        self.awaitingToSendWorAck = 0 #by Rp to ED
+        self.toWhichEdAmIAwaitingToSendAck = [] #list of ED IDs
 
         #data dump files
         tx_status_file_name = 'tx status data\dump_node_'+ str(self.id)+'.txt'       
@@ -489,6 +500,29 @@ class node():
             else:
                 print("Incorrect device type!")
 
+    def setIconColorByMode(self, lineNo = 0):
+        global graphics
+        if (graphics == 1):
+            if (self.mode == "CAD" or self.mode == "SLEEP"):
+                if self.type.lower() == "ed":
+                    color = 'lightblue'
+                elif self.type.lower() == "rp":
+                    color = 'lightgreen'
+                elif self.type.lower() == "gw":
+                    color = 'pink'
+            else:
+                if self.type.lower() == "ed":
+                    color = 'blue'
+                elif self.type.lower() == "rp":
+                    color = 'green'
+                elif self.type.lower() == "gw":
+                    color = 'red'
+            if(color != self.icon.get_facecolor()):
+                if(debug):
+                    print(f"Node {self.id} changing color to {color} at line {lineNo}")
+            self.lastStateChangeTime = env.now
+            self.icon.set_color(color)
+
 
     def batteryUpdate(self, env, dischargeRate):
         T = (env.now - self.batteryLastRecordedTime)/3600000
@@ -514,7 +548,7 @@ class node():
         return rssi + random.uniform(-1, 1) #random noise added
 
 
-    def createPackets(self, packetType = "OTHER", premlen=8):
+    def createPackets(self, packetType = "OTHER", premlen=8, intendedRxId=-1, nodeAcknowledged=-1, seqNr=None, addTime=None):
         global experiment
         global Ptx
         global minsensi
@@ -532,8 +566,8 @@ class node():
                 self.neighbor_rssi[i] = self.calc_rssi(i)
                 self.neighbor_ids.append(i)
 
-        if(debug):
-            print(self.type.upper(),":",self.id, "x", self.x, "y", self.y, "dist: ", self.dist)
+        # if(debug):
+        #     print(self.type.upper(),":",self.id, "x", self.x, "y", self.y, "dist: ", self.dist)
 
 
         #cr =1,2,3,or 4
@@ -547,8 +581,10 @@ class node():
             freq = 915900000 # Data channel for repeaters
             if (self.type.lower() == "ed"):
                 freq = 917500000 #Data channel for end devices
-            if (packetType == "WOR_up" or packetType == "WOR_down"):
+            if ((packetType == "WOR_up" or packetType == "WOR_down")and self.type.lower() == "ed"):
                 freq = 916200000 #WOR channel
+            if ((packetType == "WOR_up" or packetType == "WOR_down")and self.type.lower() != "ed"):
+                freq = 916500000 #WOR channel            
 
         # Here more experiments with different parameters can be added
         # ...
@@ -558,15 +594,15 @@ class node():
         if(packetType == "WOR_up" or packetType == "WOR_down"):
             for i in range(0,len(nodes)):
                 if(self.type.upper() == "ED"):
-                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen))
+                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
                 else:
-                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen))
+                    self.packet.append(myPacket(self.id, 15, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
         else:
             for i in range(0,len(nodes)):
                 if(self.type.upper() == "ED"):
-                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen))
+                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, 0, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
                 else:
-                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen))
+                    self.packet.append(myPacket(self.id, 20, self.dist[i], i, Ptx, sf, cr, bw, freq, packetType, premlen, intendedRxId, nodeAcknowledged, seqNr, addTime))
 
 
     def drawTxArrows(self):
@@ -577,7 +613,9 @@ class node():
                 y = nodes[pk.nodeid].y
                 dx = nodes[pk.rxNodeId].x -x
                 dy = nodes[pk.rxNodeId].y -y
-                if(nodes[pk.rxNodeId].type.upper() == "ED"):
+                if(pk.packetType == "WOR_up" or pk.packetType == "WOR_down"):
+                        self.txArrowPlots[i] = plt.arrow(x,y,dx,dy, width=1, color="lightblue", head_width=5, length_includes_head=True)
+                elif(nodes[pk.rxNodeId].type.upper() == "ED"):
                     self.txArrowPlots[i] = plt.arrow(x,y,dx,dy, width=1, color="gray", head_width=5, length_includes_head=True)
                 else:
                     self.txArrowPlots[i] = plt.arrow(x,y,dx,dy, width=1, color="black", head_width=5, length_includes_head=True, linewidth=2)
@@ -627,7 +665,8 @@ class node():
         txInfoString = ""
         for i in range(len(transmittingNodeIDsTemp)):
             if(nodes[transmittingNodeIDsTemp[i]].tx_activity["active"]):
-                txInfoString += f"Node {transmittingNodeIDsTemp[i]} transmitting pkt {nodes[transmittingNodeIDsTemp[i]].packet[0].seqNr}\n"
+                x,y,t,pktType = nodes[transmittingNodeIDsTemp[i]].packet[0].seqNr.split('|')
+                txInfoString += f"Node {transmittingNodeIDsTemp[i]} sending pkt {x}|{y}|{pktType}\n"
             else:
                 transmittingNodeIDs.remove(transmittingNodeIDsTemp[i])
         if(txInfoPlot != None):
@@ -664,41 +703,131 @@ class node():
         if(colInfoPlot != None):
             colInfoPlot.remove()
         colInfoPlot = plt.text(xmax*0.66, ymax*0.95, colInfoString, fontsize='large', verticalalignment='top')
+    
 
-    def transmitOnce(self, env):
-        #carrier sensing
-        if(carrier_sensing_ed ==1): 
-            while(len(self.packetSourcesAtRx) != 0):
-                yield env.timeout(1)
-                if(debug):
-                    print("ED: waiting till medium is idle")
-        
-
+    def endDeviceStateMachine(self, env):
         global packetSeq
-        packetSeq = packetSeq + 1
-
+        global lastPacketGenTime
         global totalSimPackets
+        global nodes
 
-        self.tx_activity["active"] = True
-        self.createPackets("DATA_up")
-        self.tx_activity["start"] = env.now
-        self.tx_activity["end"] = env.now + self.packet[0].rectime
-        self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-        self.tx_activity["tx_packet_type"] = "DATA_up"
-        self.sent = self.sent + 1
+        while(True):
+            self.mode = "CAD"
+            self.batteryUpdate(env, self.currentCad)
+            self.setIconColorByMode(get_linenumber())
+            yield env.timeout(random.expovariate(1.0/float(self.period)))
 
+            self.mode = "RX"
+            self.batteryUpdate(env, self.currentRx)
+            self.setIconColorByMode(get_linenumber())
+
+            #carrier sensing
+            if(carrier_sensing_ed ==1): 
+                while(len(self.packetSourcesAtRx) != 0):
+                    yield env.timeout(1)
+                    # if(debug):
+                    #     print("ED: waiting till medium is idle")
+
+            packetSeq = packetSeq + 1
+
+            if (packetSeq > totalSimPackets):
+                lastPacketGenTime = env.now
+                break
+
+            # $$$$$$$$$$$$$$$$$
+            # if(packetSeq == 980):
+            #     global realtime_graphics
+            #     global debug
+            #     realtime_graphics = 1
+            #     debug = 1
+            
+            if(repeater_sleep_algo):
+                if(self.worAckReceived == -1):
+                    #first send WORed then data packet
+                    self.nextRp = -1 #broadcast WOR
+                    seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|WOR_up"
+                    addTime = round(env.now, 1)
+                    self.tx_activity["active"] = True
+                    self.createPackets(packetType="WOR_up", premlen=-1, seqNr=seqNr, addTime=addTime)
+                    self.tx_activity["start"] = env.now
+                    self.tx_activity["end"] = env.now + self.packet[0].rectime
+                    self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                    self.tx_activity["tx_packet_type"] = "WOR_up"
+                    self.worAckReceived = 0
+                    self.tx_status_file.write(str(env.now))
+                    yield env.process(self.transmit(env))
+
+                    self.mode = "RX"
+                    self.batteryUpdate(env, self.currentRx)
+                    self.setIconColorByMode(get_linenumber())
+                    k = 0
+                    while (self.worAckReceived == 0):
+                        yield env.timeout(1) #waiting for WOR ACK
+                        k = k + 1
+                        if(k > 20000):
+                            self.worAckReceived = 1
+                            print("ED:",self.id,"WOR ACK wait timeout")
+                            break
+
+                    if(self.worAckReceived == 1):
+                        #carrier sensing
+                        if(carrier_sensing_ed ==1): 
+                            while(len(self.packetSourcesAtRx) != 0):
+                                yield env.timeout(1)
+                                # if(debug):
+                                #     print("ED: waiting till medium is idle")
+
+                        self.worAckReceived = -1
+                        seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|DATA_up"
+                        addTime = round(env.now, 1)
+                        self.tx_activity["active"] = True
+                        self.createPackets(packetType="DATA_up", intendedRxId=self.nextRp, seqNr=seqNr, addTime=addTime)
+                        self.tx_activity["start"] = env.now
+                        self.tx_activity["end"] = env.now + self.packet[0].rectime
+                        self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                        self.tx_activity["tx_packet_type"] = "DATA_up"
+                        self.sent = self.sent + 1
+                        self.tx_status_file.write(" "+str(env.now))
+                        yield env.process(self.transmit(env))
+
+            else:
+                seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|DATA_up"
+                addTime = round(env.now, 1)
+                self.tx_activity["active"] = True
+                self.createPackets(packetType="DATA_up", seqNr=seqNr, addTime=addTime)
+                self.tx_activity["start"] = env.now
+                self.tx_activity["end"] = env.now + self.packet[0].rectime
+                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                self.tx_activity["tx_packet_type"] = "DATA_up"
+                self.sent = self.sent + 1
+                self.tx_status_file.write(str(env.now))
+                # for i in range(0, len(nodes)):
+                #     self.packet[i].addTime = round(env.now, 1)
+                #     self.packet[i].seqNr = f"{self.id}|{packetSeq}|{self.packet[i].addTime}|{self.tx_activity['tx_packet_type']}"
+                yield env.process(self.transmit(env))
+
+
+    #only for the transmission by end-devices
+    def transmit(self, env, seqNr=None):
+        global packetSeq
+        global lastPacketGenTime
+        global totalSimPackets
         global nodes
         global lostPackets
         global collidedPackets
         global fignum
+        self.mode = "TX"
+        self.batteryUpdate(env, self.currentTx)
+        self.setIconColorByMode(get_linenumber())
 
         if(debug):
-            print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}")
+            # print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}|{self.tx_activity['tx_packet_type']}")
+            print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.packet[0].seqNr}")
 
         for i in range(0, len(nodes)):
-            self.packet[i].addTime = round(env.now, 0)
-            self.packet[i].seqNr = f"{self.id}|{packetSeq}|{self.packet[i].addTime}"
-            
+            self.packet[i].addTime = round(env.now, 1)
+            if(seqNr != None):
+                self.packet[i].seqNr = seqNr            
             if(self.packet[i].lost == 0): #checking if the packet reachs at node[i]
                 if (self in nodes[i].packetSourcesAtRx):
                     print("ERROR: packet",self.packet[i].seqNr, "from node",self.id,"is already in node",i,"RX")
@@ -710,6 +839,8 @@ class node():
                     else:
                         self.packet[i].collided = 0
         
+        self.txPackets.append(self.packet[0].seqNr)
+
         if(realtime_graphics  and graphics):
             self.drawTxArrows()
             self.drawTime(env)
@@ -729,24 +860,36 @@ class node():
         # air time (take first packet rectime)
         yield env.timeout(self.packet[0].rectime)
         self.tx_activity["active"] = False
-        
+        self.tx_status_file.write(" "+str(env.now)+"\n")
+        self.mode = "RX"
+        self.batteryUpdate(env, self.currentRx)
+
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
 
         # if packet did not collide, add it in list of received packets
         # unless it is already in
+        nodesThatReceivedPkt = []
         for i in range(0, len(nodes)):
             if(i != self.id):
                 if self.packet[i].lost:
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
                     if ((self.packet[i].collided == 0) and (self.packet[i].processed == 1)):
-                        if (self.packet[i].seqNr not in nodes[i].recPackets):
-                            nodes[i].recPackets.append(self.packet[i].seqNr)
-                            env.process(nodes[i].receive(env, self.packet[i].seqNr, self.packetlen, self.distanceValue, self.nextRp, self.id))
+                        if (nodes[i].mode == "RX"):
+                            if(debug):
+                                print(f"called nodes[{i}].receive() from node {self.id}")
+                            env.process(nodes[i].receive(env, self.packet[i], self.packet[i].seqNr, self.distanceValue, self.nextRp, self.id))
+                            nodesThatReceivedPkt.append(i)
+                        else:
+                            if(debug):
+                                print(f"nodes[{i}] is in {nodes[i].mode} mode, cannot receive packet from node {self.id}")
                     else:
                         # XXX only for debugging
                         collidedPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
+        
+        # if(debug):
+        #     print("|____Nodes that received the packet:",nodesThatReceivedPkt)
 
         # complete packet has been received by base station
         # can remove it
@@ -758,144 +901,80 @@ class node():
             self.packet[i].processed = 0
 
 
-    #only for the transmission by end-devices
-    def transmit(self, env):
-        global packetSeq
-        global lastPacketGenTime
-        global totalSimPackets
+
+    def receive(self, env, packet, seqNr, prevDistanceValue, nextRp, prevRp):
         global nodes
-        global lostPackets
-        global collidedPackets
-        global fignum
-        self.mode = "CAD"
-        self.batteryUpdate(env, self.currentCad)
-
-        while(True):
-            yield env.timeout(random.expovariate(1.0/float(self.period)))
-            self.mode = "RX"
-            self.batteryUpdate(env, self.currentRx)
-
-            #carrier sensing
-            if(carrier_sensing_ed ==1): 
-                while(len(self.packetSourcesAtRx) != 0):
-                    yield env.timeout(1)
-                    if(debug):
-                        print("ED: waiting till medium is idle")
-            
-            self.mode = "TX"
-            self.batteryUpdate(env, self.currentTx)
-            packetSeq = packetSeq + 1
-
-            if (packetSeq > totalSimPackets):
-                lastPacketGenTime = env.now
-                break
-
-            if(repeater_sleep_algo):
-                #first send WORed then data packet
-                self.tx_activity["active"] = True
-                self.createPackets("WOR_up", 1000)
-                self.tx_activity["start"] = env.now
-                self.tx_activity["end"] = env.now + self.packet[0].rectime
-                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-                self.tx_activity["tx_packet_type"] = "DATA_up"
-                self.sent = self.sent + 1
-                self.tx_status_file.write(str(env.now))
-            else:
-                self.tx_activity["active"] = True
-                self.createPackets("DATA_up")
-                self.tx_activity["start"] = env.now
-                self.tx_activity["end"] = env.now + self.packet[0].rectime
-                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-                self.tx_activity["tx_packet_type"] = "DATA_up"
-                self.sent = self.sent + 1
-                self.tx_status_file.write(str(env.now))
-
-            if(debug):
-                print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}")
-
-            for i in range(0, len(nodes)):
-                self.packet[i].addTime = round(env.now, 1)
-                self.packet[i].seqNr = f"{self.id}|{packetSeq}|{self.packet[i].addTime}"
-                
-                if(self.packet[i].lost == 0): #checking if the packet reachs at node[i]
-                    if (self in nodes[i].packetSourcesAtRx):
-                        print("ERROR: packet",self.packet[i].seqNr, "from node",self.id,"is already in node",i,"RX")
-                    else:
-                        nodes[i].packetSourcesAtRx.append(self)
-                        # checking collision at the start of packet reception
-                        if (checkcollision(self.packet[i], nodes[i])==1):
-                            self.packet[i].collided = 1
-                        else:
-                            self.packet[i].collided = 0
-            
-            self.txPackets.append(self.packet[0].seqNr)
-
-            if(realtime_graphics  and graphics):
-                self.drawTxArrows()
-                self.drawTime(env)
-                self.drawTransmittingInfo()
-                self.markCollidedArrows()
-                self.drawCollisionInfo()
-                if(slideShowPause):
-                    plt.pause(slideShowPause)
-                else:
-                    plt.waitforbuttonpress()
-                ext = ".png"
-                figname = str(fignum) + ext
-                save_path = os.path.join("plots", figname)
-                fignum +=1
-                plt.savefig(save_path)
-            
-            # air time (take first packet rectime)
-            yield env.timeout(self.packet[0].rectime)
-            self.tx_activity["active"] = False
-            self.tx_status_file.write(" "+str(env.now)+"\n")
-            
-            if(realtime_graphics  and graphics):
-                self.eraseTxArrows()
-
-            # if packet did not collide, add it in list of received packets
-            # unless it is already in
-            for i in range(0, len(nodes)):
-                if(i != self.id):
-                    if self.packet[i].lost:
-                        lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
-                    else:
-                        if ((self.packet[i].collided == 0) and (self.packet[i].processed == 1)):
-                            if (self.packet[i].seqNr not in nodes[i].recPackets):
-                                nodes[i].recPackets.append(self.packet[i].seqNr)
-                                env.process(nodes[i].receive(env, self.packet[i].seqNr, self.packetlen, self.distanceValue, self.nextRp, self.id))
-                        else:
-                            # XXX only for debugging
-                            collidedPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
-
-            # complete packet has been received by base station
-            # can remove it
-            for i in range(0, len(nodes)):
-                if (self in nodes[i].packetSourcesAtRx):
-                    nodes[i].packetSourcesAtRx.remove(self)
-                # reset the packet
-                self.packet[i].collided = 0
-                self.packet[i].processed = 0
-
-
-    def receive(self, env, seqNr, packetlen, prevDistanceValue, nextRp, prevRp):
-        self.batteryUpdate(env, self.currentRx)
         yield env.timeout(repeaterProcessingTime) #wait for the processing time
-        self.batteryUpdate(env, self.currentCad)
+
+        if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
+            self.lowerDistanceRecBuffer.append([seqNr, nodes[prevRp].batteryPercentage, prevRp])
+            if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[prevRp].type.lower() != "ed" and self.nearestGwId==nodes[prevRp].nearestGwId and self.worAckReceived==0):
+                self.worAckReceived = 1
+
+        if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[packet.nodeid].type.lower() != "ed"):
+            if(nodes[packet.nodeAcknowledged].type.lower() == "ed" and self.awaitingToSendWorAck ==1 and (packet.nodeAcknowledged in self.toWhichEdAmIAwaitingToSendAck)):
+                self.toWhichEdAmIAwaitingToSendAck.remove(packet.nodeAcknowledged)
+                if len(self.toWhichEdAmIAwaitingToSendAck) == 0:
+                    self.awaitingToSendWorAck = 0
+
+        if (seqNr not in self.recPackets):
+            self.recPackets.append(seqNr) 
+        else:
+            return 0 #already processed
+        
+        if(debug):
+            print(f"Node {self.id}({self.type.upper()}) Processing Packet:{seqNr}")
 
         #check if it is a gateway
         if (self.type.lower() == "gw"):
-            #Do no more transmissions. Account the packets received.
-            if(debug):
-                print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
-                # print("T =",env.now, "|GW",self.id, "Received Packet:",seqNr,"\n")
-            if seqNr not in packetsRecBS:
-                packetsRecBS.append(seqNr)
-                x,y,t =seqNr.split("|")
-                latency = env.now -float(t)
-                # print("Latency:",latency)
-                packetLatencies.append(latency)
+
+            if(repeater_sleep_algo):
+
+                if(packet.packetType == "WOR_up" and (packet.intendedRxNodeId == self.id or packet.intendedRxNodeId == -1)):
+                    self.packetsFifo.put(packet)
+                    with self.nTransmitters.request() as req:
+                        yield req
+                        outputPacket = yield self.packetsFifo.get()
+
+                        if(carrier_sensing_rp ==1):
+                            while(True):
+                                if(len(self.packetSourcesAtRx) == 0): 
+                                    break
+                                yield env.timeout(random.expovariate(1.0/float(outputPacket.rectime*repeatDelayMultiplier)))
+                        
+                        if(outputPacket.packetType == "WOR_up"):
+                            self.tx_activity["active"] = True
+                            self.createPackets("WOR_up", -1, nodeAcknowledged=outputPacket.nodeid, seqNr=outputPacket.seqNr)
+                            self.tx_activity["start"] = env.now
+                            self.tx_activity["end"] = env.now + self.packet[0].rectime
+                            self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                            self.tx_activity["tx_packet_type"] = "WOR_up"
+                            self.tx_status_file.write(str(env.now))
+                            yield env.process(self.transmit(env))
+
+                elif(packet.packetType == "DATA_up"):
+                    #Do no more transmissions. Account the packets received.
+                    if(debug):
+                        print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
+                        # print("T =",env.now, "|GW",self.id, "Received Packet:",seqNr,"\n")
+                    if seqNr not in packetsRecBS:
+                        packetsRecBS.append(seqNr)
+                        x,y,t,pktType =seqNr.split("|")
+                        latency = env.now -float(t)
+                        # print("Latency:",latency)
+                        packetLatencies.append(latency)          
+            
+            else:
+                #Do no more transmissions. Account the packets received.
+                if(debug):
+                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
+                    # print("T =",env.now, "|GW",self.id, "Received Packet:",seqNr,"\n")
+                if seqNr not in packetsRecBS:
+                    packetsRecBS.append(seqNr)
+                    x,y,t,pktType =seqNr.split("|")
+                    latency = env.now -float(t)
+                    # print("Latency:",latency)
+                    packetLatencies.append(latency)
             
             #overall receiving rate calculation when 50% of the packets are received 
             global totalSimPackets
@@ -914,59 +993,235 @@ class node():
 
         #check if it is an end-device
         elif (self.type.lower() == "ed"):
-            if(debug):
-                print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
-                # print("T =",env.now, "|ED",self.id, "Received Packet:",seqNr,"\n")
+            if(repeater_sleep_algo):
+                if(packet.packetType == "WOR_up" and self.worAckReceived == 0 and nodes[packet.nodeid].type.lower() != "ed"):
+                    self.worAckReceived = 1
+                    self.nextRp = packet.nodeid
+                    if(debug):
+                        print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received WOR ACK:{seqNr} | Next RP set to {self.nextRp}")
+                elif(packet.packetType == "DATA_up" or packet.packetType == "DATA_down"):
+                    if(debug):
+                        print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
+            
+            else:
+                if(debug):
+                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
         
         #if it is a repeater
         else:
-            if(debug):
-                print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
+            if(repeater_sleep_algo):
+                if(debug):
+                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr} from Node {prevRp}({nodes[prevRp].type.upper()})")
 
-            if(positional_algo):
-                standby = 0
-                
-                if(self.distanceValue < prevDistanceValue or prevDistanceValue == -1):
-                    
-                    packetInfo = [seqNr, packetlen]
-                    
-                    if(standby_repeater_algo):           
-                        if(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and self.distanceValue>nodes[nextRp].distanceValue and self.distanceValue<nodes[prevRp].distanceValue):
-                            standby = 1
-                            standByTime = float(self.packet[0].rectime +self.packet[0].rectime*repeatDelayMultiplier*5)
-                            yield env.process(self.standbyMode(env, packetInfo, standByTime, prevRp))
+                if(packet.packetType == "WOR_up" and nodes[prevRp].type.lower() == "ed"):
+                    self.awaitingToSendWorAck = 1
+                    self.toWhichEdAmIAwaitingToSendAck.append(prevRp)
+                    self.worAckReceived = 0
+                    yield env.timeout(random.expovariate(1.0/float(packet.rectime*repeatDelayMultiplier)))
+                    # yield env.timeout(random.uniform(0, 100))
+                    if(carrier_sensing_rp ==1):
+                        while(len(self.packetSourcesAtRx) != 0):
+                            yield env.timeout(1)
 
-                        elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and nodes[prevRp].distanceValue>nodes[nextRp].distanceValue>self.distanceValue):
-                            if(energy_aware_algo):
-                                if(round(nodes[nextRp].batteryPercentage%10) == 0):
-                                    if(nodes[nextRp].batteryPercentage<(self.batteryPercentage)):
-                                        nodes[prevRp].nextRp = self.id
-
-
+                    if(self.awaitingToSendWorAck == 1):
                         
-                        elif(self.id == nextRp or nextRp == -1):
-                            # print("received by the one addressed!")              
-                            self.packetsFifo.put(packetInfo)
-                            with self.nTransmitters.request() as req:
-                                yield req
-                                packetInfoOut = yield self.packetsFifo.get()
-                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                        packetInfo = [seqNr, prevRp]
+                        self.packetsFifo.put(packetInfo)
+                        with self.nTransmitters.request() as req:
+                            yield req
+                            packetInfoOut = yield self.packetsFifo.get()
+                            edId,packetSeq,genTime,pktType =packetInfoOut[0].split("|")
+
+                            if(carrier_sensing_rp ==1):
+                                while(len(self.packetSourcesAtRx) != 0):
+                                    yield env.timeout(1)
+
+                            self.tx_activity["active"] = True
+                            self.createPackets(pktType, -1, self.nextRp, packetInfoOut[1], packetInfoOut[0], round(env.now, 1))
+                            self.tx_activity["start"] = env.now
+                            self.tx_activity["end"] = env.now + self.packet[0].rectime
+                            self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                            self.tx_activity["tx_packet_type"] = pktType
+                            self.tx_status_file.write(str(env.now))
+                            yield env.process(self.transmit(env))
+                            self.awaitingToSendWorAck = 0
+                            self.toWhichEdAmIAwaitingToSendAck = []
+                    
+                else:
+                    if(positional_algo):
+                        standby = 0
+
+                        if(nodes[prevRp].type.lower()!="ed" and self.nearestGwId!=nodes[prevRp].nearestGwId):
+                            if(self.worAckReceived!=0 and self.awaitingToSendWorAck==0 and len(self.packetsFifo.items)==0 and self.standbyBufferCount==0):
+                                self.mode = "CAD"
+                                self.batteryUpdate(env, self.currentCad)
+                                self.setIconColorByMode(get_linenumber())
+                                self.worAckReceived = -1
+                            return 0
+
+                        if(packet.packetType == "WOR_up" or packet.packetType == "DATA_up"):
+                            if(self.distanceValue < prevDistanceValue or prevDistanceValue == -1):
+                                
+                                packetInfo = [seqNr, prevRp]
+                                
+                                if(packet.packetType == "WOR_up" and self.nearestGwId==nodes[prevRp].nearestGwId):
+                                    self.worAckReceived = 0
+
+                                if(standby_repeater_algo):          
+                                    if(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and self.distanceValue>nodes[nextRp].distanceValue):
+                                        
+                                        if(packet.packetType=="DATA_up" and self.worAckReceived==0):
+                                            k = 0
+                                            while(True):
+                                                yield env.timeout(10)
+                                                k +=1
+                                                if(self.worAckReceived==1 or k==1000):
+                                                    if(debug and k==1000):
+                                                        print(f"Node {self.id}({self.type.upper()}) didn't receive a WOR-ACK for Pkt:{seqNr}")
+                                                    break
+                                        elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
+                                            if(debug):
+                                                print(f"Node {self.id}({self.type.upper()}) isn't expecting any Pkt but got:{seqNr}")
+                                            return 0
+                                        
+                                        if(packet.packetType=="DATA_up"):
+                                            standByTime = float(packet.rectime*repeatDelayMultiplier +5000)
+                                        elif(packet.packetType=="WOR_up"):
+                                            standByTime = float(packet.rectime*repeatDelayMultiplier)
+
+                                        standby = 1
+                                        self.standbyBufferCount += 1
+                                        # standByTime = float(packet.rectime +packet.rectime*repeatDelayMultiplier*5+5000) 
+                                        standby = yield env.process(self.standbyMode(env, packetInfo, standByTime, prevRp))
+                                        self.standbyBufferCount -= 1
+                                        if(standby == 1):
+                                            if(debug):
+                                                print(f"Standby Recovery by Node {self.id} at T={round(env.now,2)} (Standby Time={round(standByTime,2)})")
+                                            self.packetsFifo.put(packetInfo)
+                                            with self.nTransmitters.request() as req:
+                                                yield req
+                                                packetInfoOut = yield self.packetsFifo.get()
+                                                if(packet.packetType == "WOR_up" or packet.packetType == "WOR_down"):
+                                                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[1]))
+                                                else:
+                                                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                                        else:
+                                            #Whether goes back to RX mode or CAD
+                                            if((packet.packetType == "DATA_up" or packet.packetType == "DATA_down") and (len(self.packetsFifo.items) == 0) and self.awaitingToSendWorAck==0 and self.standbyBufferCount==0):
+                                                if(debug):
+                                                    print(f"-*-*-*-Node {self.id} standby period ends with Sb={standby} Pkt-type={packet.packetType} (seqNr:{seqNr})") 
+                                                self.mode = "CAD"
+                                                self.batteryUpdate(env, self.currentCad)
+                                                self.setIconColorByMode(get_linenumber())
+                                                self.worAckReceived = -1
+
+                                    elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="gw" and packet.packetType=="DATA_up" and (len(self.packetsFifo.items) == 0) and self.awaitingToSendWorAck==0 and self.standbyBufferCount==0):
+                                        self.mode = "CAD"
+                                        self.batteryUpdate(env, self.currentCad)
+                                        self.setIconColorByMode(get_linenumber())
+                                        self.worAckReceived = -1
+                                        # print(f"-*-*-*-Node {self.id} going to CAD mode as nextRp is GW (seqNr:{seqNr})")
+
+                                    elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and nodes[prevRp].distanceValue>nodes[nextRp].distanceValue>self.distanceValue):
+                                        if(energy_aware_algo):
+                                            if(round(nodes[nextRp].batteryPercentage%10) == 0):
+                                                if(nodes[nextRp].batteryPercentage<(self.batteryPercentage)):
+                                                    nodes[prevRp].nextRp = self.id
+                                                    if(debug):
+                                                        print("Energy Aware Algo changed node ",prevRp,"'s nextRp to ", self.id)
+                                    
+                                    elif(self.id == nextRp or nextRp == -1):
+                                        # print("received by the one addressed!")
+                                        if(packet.packetType=="DATA_up" and self.worAckReceived==0):
+                                            k = 0
+                                            while(True):
+                                                yield env.timeout(10)
+                                                k +=1
+                                                if(self.worAckReceived==1 or k==1000):
+                                                    break
+
+                                        elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
+                                            return 0
+
+                                        self.packetsFifo.put(packetInfo)
+                                        with self.nTransmitters.request() as req:
+                                            yield req
+                                            packetInfoOut = yield self.packetsFifo.get()
+                                            if(packet.packetType == "WOR_up" or packet.packetType == "WOR_down"):
+                                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1], packetInfoOut[1]))
+                                            else:
+                                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                                else:
+                                    self.packetsFifo.put(packetInfo)
+                                    with self.nTransmitters.request() as req:
+                                        yield req
+                                        packetInfoOut = yield self.packetsFifo.get()
+                                        yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                            
+                            elif(self.distanceValue > prevDistanceValue and nodes[prevRp].type.lower()!="ed" and packet.packetType=="WOR_up" and len(self.packetsFifo.items)==0):
+                                self.mode = "CAD"
+                                self.batteryUpdate(env, self.currentCad)
+                                self.setIconColorByMode(get_linenumber())
+                                self.worAckReceived = -1
+
                     else:
+                        packetInfo = [seqNr, prevRp]
                         self.packetsFifo.put(packetInfo)
                         with self.nTransmitters.request() as req:
                             yield req
                             packetInfoOut = yield self.packetsFifo.get()
                             yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
-           
-
-
+                    
             else:
-                packetInfo = [seqNr,packetlen, 0]
-                self.packetsFifo.put(packetInfo)
-                with self.nTransmitters.request() as req:
-                    yield req
-                    packetInfoOut = yield self.packetsFifo.get()
-                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                if(debug):
+                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
+
+                if(positional_algo):
+                    standby = 0
+                    
+                    if(self.distanceValue < prevDistanceValue or prevDistanceValue == -1):
+                        
+                        packetInfo = [seqNr, prevRp]
+                        
+                        if(standby_repeater_algo):           
+                            if(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and self.distanceValue>nodes[nextRp].distanceValue and self.distanceValue<nodes[prevRp].distanceValue):
+                                standby = 1
+                                standByTime = float(self.packet[0].rectime +self.packet[0].rectime*repeatDelayMultiplier*5)
+                                standby = yield env.process(self.standbyMode(env, packetInfo, standByTime, prevRp))
+                                if(standby == 1):
+                                    self.packetsFifo.put(packetInfo)
+                                    with self.nTransmitters.request() as req:
+                                        yield req
+                                        packetInfoOut = yield self.packetsFifo.get()
+                                        yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+
+                            elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and nodes[prevRp].distanceValue>nodes[nextRp].distanceValue>self.distanceValue):
+                                if(energy_aware_algo):
+                                    if(round(nodes[nextRp].batteryPercentage%10) == 0):
+                                        if(nodes[nextRp].batteryPercentage<(self.batteryPercentage)):
+                                            nodes[prevRp].nextRp = self.id
+                            
+                            elif(self.id == nextRp or nextRp == -1):
+                                # print("received by the one addressed!")              
+                                self.packetsFifo.put(packetInfo)
+                                with self.nTransmitters.request() as req:
+                                    yield req
+                                    packetInfoOut = yield self.packetsFifo.get()
+                                    yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+                        else:
+                            self.packetsFifo.put(packetInfo)
+                            with self.nTransmitters.request() as req:
+                                yield req
+                                packetInfoOut = yield self.packetsFifo.get()
+                                yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
+            
+                else:
+                    packetInfo = [seqNr, prevRp]
+                    self.packetsFifo.put(packetInfo)
+                    with self.nTransmitters.request() as req:
+                        yield req
+                        packetInfoOut = yield self.packetsFifo.get()
+                        yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
 
 
     def standbyMode(self, env, packetInfo, standByTime, prevRp):
@@ -977,10 +1232,18 @@ class node():
         total_stanby += 1
 
         seqNr = packetInfo[0]
+        x,y,t,pktType =seqNr.split("|")
 
-        self.batteryUpdate(env, self.currentRx)
         yield env.timeout(random.uniform(0.8*standByTime, 1.2*standByTime))
-        self.batteryUpdate(env, self.currentCad)
+        # exactStandByTime = int(random.uniform(0.8*standByTime, 1.2*standByTime))
+        # if(debug):
+        #     print(f"Node {self.id}({self.type.upper()}) entering Standby for {exactStandByTime} ms at T={round(env.now,2)} (Pkt:{seqNr})")
+        
+        # k = 0
+        # while(k < exactStandByTime):
+        #     k +=1
+        #     yield env.timeout(1)
+        
         for item in self.lowerDistanceRecBuffer:
             if (item[0] == seqNr):
                 if(energy_aware_algo):
@@ -996,18 +1259,15 @@ class node():
 
                 standby_retains += 1
                 return 0
-        
+    
         standby_recoveries += 1
-        self.packetsFifo.put(packetInfo)
-        with self.nTransmitters.request() as req:
-            yield req
-            packetInfoOut = yield self.packetsFifo.get()
-            yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
-            return 1
+        return 1
         
+
     def enableCad(self, env):
         self.mode = "CAD"
         self.batteryUpdate(env, self.currentCad)
+        self.setIconColorByMode(get_linenumber())
         # if((env.now - self.lastCadScanTime)%self.cadPeriodity != 0):
         #     yield env.timeout(self.cadPeriodity - (env.now - self.lastCadScanTime)%self.cadPeriodity)
 
@@ -1022,9 +1282,19 @@ class node():
                     if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
                         self.mode = "RX"
                         self.batteryUpdate(env, self.currentRx)
+                        self.setIconColorByMode(get_linenumber())
                         if(debug):
                             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
 
+            #if stuck in RX mode and idling somehow, go back to CAD
+            if(self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+10000) < env.now):
+                self.mode = "CAD"
+                self.batteryUpdate(env, self.currentCad)
+                self.setIconColorByMode(get_linenumber())
+                self.worAckReceived = -1
+                if(debug):
+                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Switching back to CAD mode after idling in RX")
+                
             yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
 
             #Exit CAD function after the end of the simulation
@@ -1032,7 +1302,7 @@ class node():
                 break
 
 
-    def repeat(self, env, seqNr, packetlen):
+    def repeat(self, env, seqNr, prevRp, nodeAcknowledged=-1):
         global nodes
         global packetsRecBS
         global collidedPackets
@@ -1040,8 +1310,14 @@ class node():
         global repeaterProcessingTime
         global fignum
 
+        x,y,t,pktType =seqNr.split("|")
+
+        self.mode = "RX"
         self.batteryUpdate(env, self.currentRx)
-        yield env.timeout(random.expovariate(1.0/float(self.packet[0].rectime*repeatDelayMultiplier))) #wait random time with mean =airtime*repeatDelayMultiplier
+        self.setIconColorByMode(get_linenumber())
+
+        # yield env.timeout(random.expovariate(1.0/float(nodes[prevRp].packet[0].rectime*repeatDelayMultiplier))) #wait random time with mean =airtime*repeatDelayMultiplier
+        yield env.timeout(random.expovariate(1.0/10)) #wait random time with mean =10 ms
 
         # #modified carrier sensing
         if(carrier_sensing_rp ==1):
@@ -1050,15 +1326,27 @@ class node():
                     break
                 yield env.timeout(random.expovariate(1.0/float(self.packet[0].rectime*repeatDelayMultiplier)))
 
-        
+        if(repeater_sleep_algo):
+            if(pktType == "WOR_up" or pktType == "WOR_down"):
+                self.createPackets(pktType, -1, intendedRxId=self.nextRp, nodeAcknowledged=nodeAcknowledged, seqNr=seqNr)
+                self.tx_activity["tx_packet_type"] = pktType
+            
+            elif(pktType == "DATA_up" or pktType == "DATA_down"):
+                self.createPackets(pktType, intendedRxId=self.nextRp, seqNr=seqNr)
+                self.tx_activity["tx_packet_type"] = pktType
+
+        else:
+            self.createPackets("DATA_up", intendedRxId=self.nextRp, seqNr=seqNr)
+            self.tx_activity["tx_packet_type"] = "DATA_up"
+
         self.tx_activity["active"] = True #starting transmission
-        self.createPackets("DATA_up")
         self.tx_activity["start"] = env.now
         self.tx_activity["end"] = env.now + self.packet[0].rectime
         self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-        self.tx_activity["tx_packet_type"] = "DATA_up"
         self.tx_status_file.write(str(env.now))
+        self.mode = "TX"
         self.batteryUpdate(env, self.currentTx)
+        self.setIconColorByMode(get_linenumber())
 
         if(debug):
             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Forwarded Packet:{seqNr}")
@@ -1069,7 +1357,7 @@ class node():
             self.txTimePercentage = (len(self.txPackets)*self.packet[0].rectime)/lastPacketGenTime
         
         for i in range(0, len(nodes)): #add the transmitting node itself too at its own rx
-            self.packet[i].addTime = env.now
+            self.packet[i].addTime = round(env.now, 1)
             self.packet[i].seqNr = seqNr
             self.packet[i].txBattery = self.batteryPercentage
 
@@ -1105,27 +1393,52 @@ class node():
         yield env.timeout(self.packet[0].rectime)
         self.tx_activity["active"] = False
         self.tx_status_file.write(" "+str(env.now)+"\n")
-        self.batteryUpdate(env, self.currentCad)
         
+        #Whether goes back to RX mode or CAD
+        if(repeater_sleep_algo):
+            if((self.packet[0].packetType == "DATA_up" or self.packet[0].packetType == "DATA_down") and (len(self.packetsFifo.items) == 0)):
+                self.mode = "CAD"
+                self.batteryUpdate(env, self.currentCad)
+                self.setIconColorByMode(get_linenumber())
+                self.worAckReceived = -1
+
+            else:
+                self.mode = "RX"
+                self.batteryUpdate(env, self.currentRx)
+                self.setIconColorByMode(get_linenumber())
+        else:
+            self.mode = "RX"
+            self.batteryUpdate(env, self.currentRx)
+            self.setIconColorByMode(get_linenumber())
+
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
 
         # if packet did not collide, add it in list of received packets
         # unless it is already in
+        nodesThatReceivedPkt = []
         for i in range(0, len(nodes)):
             if(i != self.id):
                 if (self.packet[i].lost):
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
                     if (self.packet[i].collided == 0):
-                        if (self.packet[i].seqNr not in nodes[i].recPackets):
-                            nodes[i].recPackets.append(self.packet[i].seqNr)
-                            env.process(nodes[i].receive(env, self.packet[i].seqNr, packetlen, self.distanceValue, self.nextRp, self.id))
-                        if (nodes[i].distanceValue >= self.distanceValue):
-                            nodes[i].lowerDistanceRecBuffer.append([seqNr,self.batteryPercentage, self.id])
+                        if (nodes[i].mode == "RX"):
+                            if(debug):
+                                print(f"called nodes[{i}].receive() from node {self.id}")
+                            env.process(nodes[i].receive(env, self.packet[i], self.packet[i].seqNr, self.distanceValue, self.nextRp, self.id))
+                            nodesThatReceivedPkt.append(i)
+                        # if (self.packet[i].seqNr not in nodes[i].recPackets):
+                        #     nodes[i].recPackets.append(self.packet[i].seqNr)
+                        #     env.process(nodes[i].receive(env, self.packet[i], self.packet[i].seqNr, self.distanceValue, self.nextRp, self.id))
+                        # if (nodes[i].distanceValue >= self.distanceValue):
+                        #     nodes[i].lowerDistanceRecBuffer.append([seqNr,self.batteryPercentage, self.id])
                     else:
                         # XXX only for debugging
                         collidedPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
+        
+        # if(debug):
+        #     print("|____Nodes that received the packet:",nodesThatReceivedPkt)
 
         # complete packet has been received by base station
         # can remove it
@@ -1137,10 +1450,11 @@ class node():
             self.packet[i].processed = 0
 
 
+    
     def transmissionSuccessRate(self):
         global packetsRecBS
         for seqNr in packetsRecBS:
-            x,y,t =seqNr.split("|")
+            x,y,t,pktType =seqNr.split("|")
             if(self.id == int(x)):
                 self.sentSuccessful += 1
         if(self.sent == 0):
@@ -1154,7 +1468,7 @@ class node():
 #
 class myPacket():
     def __init__(self, nodeid, payloadLen, distance, rxNodeId,
-                 txPower=14, sf=12, cr=4, bw=125, freq=860000000, packetType="OTHER", premlen=8, intendedRxNodeId = -1):
+                 txPower=14, sf=12, cr=4, bw=125, freq=860000000, packetType="OTHER", premlen=8, intendedRxNodeId=-1, nodeAcknowledged=-1, seqNr=None, addTime=None):
         global experiment
         global gamma
         global d0
@@ -1163,9 +1477,11 @@ class myPacket():
         global GL
         global minsensi
         global nodes
-        self.seqNr = None
+        self.seqNr = seqNr
+        self.addTime = addTime
         self.rxNodeId = rxNodeId
         self.intendedRxNodeId = intendedRxNodeId
+        self.nodeAcknowledged = nodeAcknowledged
         self.nodeid = nodeid
         self.nearestGwId = nodes[nodeid].nearestGwId
         self.payloadLen = payloadLen
@@ -1202,16 +1518,16 @@ class myPacket():
 
 
         global debug
-        if(debug):
-            print ("\nCreated pkt from Node {} to Node {} |lost: {}".format(self.nodeid, self.rxNodeId, self.lost))
-            print ("  Distance", distance)
-            print ("  Ptx: ",self.ptx)
-            print ("  Lpl: ",Lpl)
-            print ("  Prx: ", self.rssi)
-            print ("  MinSensi: ",minsensi)
-            print ("  Pkt Length: ",self.payloadLen)
-            print ("  Freq: ", self.freq)
-            print ("  SF:",self.sf," BW:",self.bw," CR:",self.cr)       
+        # if(debug):
+        #     print ("\nCreated pkt from Node {} to Node {} |lost: {}".format(self.nodeid, self.rxNodeId, self.lost))
+        #     print ("  Distance", distance)
+        #     print ("  Ptx: ",self.ptx)
+        #     print ("  Lpl: ",Lpl)
+        #     print ("  Prx: ", self.rssi)
+        #     print ("  MinSensi: ",minsensi)
+        #     print ("  Pkt Length: ",self.payloadLen)
+        #     print ("  Freq: ", self.freq)
+        #     print ("  SF:",self.sf," BW:",self.bw," CR:",self.cr)       
 
 
 #

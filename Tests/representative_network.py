@@ -40,12 +40,12 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 1
+    sim.realtime_graphics = 0
     sim.debug = 0
 
     sim.positional_algo = True
     sim.standby_repeater_algo = True
-    sim.energy_aware_algo = True
+    sim.energy_aware_algo = False
 
     sim.totalSimPackets = total_sim_packets
 
@@ -195,13 +195,13 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     #Sensor Network
     for i in range(len(nodes)):
         if (nodes[i].type.lower() == "ed"):
-            env.process(nodes[i].transmit(env))
-        # if (nodes[i].type.lower() == "rp"):
-        #     env.process(nodes[i].enableCad(env))
+            env.process(nodes[i].endDeviceStateMachine(env))
+        if (nodes[i].type.lower() == "rp"):
+            env.process(nodes[i].enableCad(env))
     #For Energy Aware Mechanism Testing
     # env.process(nodes[28].transmit(env))
-    env.process(nodes[1].enableCad(env))
-    env.process(nodes[2].enableCad(env))
+    # env.process(nodes[1].enableCad(env))
+    # env.process(nodes[2].enableCad(env))
 
 
     #prepare show
@@ -212,7 +212,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         sim.plt.show()
 
     # start simulation
-    env.run(until=100000)
+    env.run()
 
     #-----------------------------------------------------------------------
     #Print simulation stat
@@ -262,14 +262,14 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
             print("RP", rp.id, "Received Pkts:", rp.recPackets)
         print("RP", rp.id, "Received Pkts:", len(rp.recPackets))
         print("RP", rp.id, "Repeated Pkts:", len(rp.txPackets))
-        print("RP", rp.id, "percentage time RP was in Tx state:", round(rp.packet[0].rectime*len(rp.txPackets)/env.now*100,1),"%\n")
+        # print("RP", rp.id, "percentage time RP was in Tx state:", round(rp.packet[0].rectime*len(rp.txPackets)/env.now*100,1),"%\n")
         
 
     
     print("********************************************")
     print("Total Generated Packets:", total_sim_packets)
-    total_lost_pkts = total_sim_packets - len(set(gw1.recPackets+gw2.recPackets))
-    # total_lost_pkts = total_sim_packets - len(set(gw1.recPackets))
+    # total_lost_pkts = total_sim_packets - len(set(gw1.recPackets+gw2.recPackets))
+    total_lost_pkts = total_sim_packets - len(sim.packetsRecBS)
 
     total_intermediate_losses = total_lost_pkts-total_ed_tx_losses
     print("Total Lost Packets:", total_lost_pkts)
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
-    parser.add_argument("-avg_send_time"             , default=25000 , help="Average time period of an end-device sending a packet")
+    parser.add_argument("-avg_send_time"             , default=360000 , help="Average time period of an end-device sending a packet")
     parser.add_argument("-total_sim_packets"         , default=5000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
