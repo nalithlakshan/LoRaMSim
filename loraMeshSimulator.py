@@ -386,13 +386,13 @@ def networkConfig():
             if(nodes[i].y > ymax):
                 ymax = nodes[i].y
         xmax = xmax*1.1
-        ymax = ymax*1.6
+        ymax = ymax*1.1
         
         ax.add_patch(Rectangle((0, 0), xmax, ymax, fill=None, alpha=1))
         current_script_path = os.path.abspath(__file__)
         current_script_directory = os.path.dirname(current_script_path)
         legendImg = mpimg.imread(current_script_directory+"/simulatorLegend.png")
-        ax.imshow(legendImg, extent=(xmax*0.03, xmax*0.19, ymax*0.68, ymax*0.92), aspect='auto')
+        ax.imshow(legendImg, extent=(xmax*0.03, xmax*0.19, ymax*0.08, ymax*0.32), aspect='auto')
 
 
 # ----------------------------------------------------------------------------------
@@ -736,11 +736,11 @@ class node():
                     #     print("ED: waiting till medium is idle")
 
             # $$$$$$$$$$$$$$$$$
-            if(packetSeq == 95):
-                global realtime_graphics
-                global debug
-                realtime_graphics = 1
-                debug = 1
+            # if(packetSeq == 95):
+            #     global realtime_graphics
+            #     global debug
+            #     realtime_graphics = 1
+            #     debug = 1
             
             if(repeater_sleep_algo):
                 if(self.worAckReceived == -1):
@@ -1558,25 +1558,38 @@ class Graph():
             print(node, "\t\t", dist[node])
 
     def minDistance(self, dist, sptSet):
-        min = 1e7
+        min_val = float('inf')
+        min_index = -1
         for v in range(self.V):
-            if dist[v] < min and sptSet[v] == False:
-                min = dist[v]
+            if dist[v] < min_val and sptSet[v] == False:
+                min_val = dist[v]
                 min_index = v
         return min_index
         
     def dijkstra(self, src):
-        dist = [1e7] * self.V
+        dist = [float('inf')] * self.V
         dist[src] = 0
         sptSet = [False] * self.V
+        
+        # Track visited nodes to identify isolated ones
+        visited = set()
+        
         for cout in range(self.V):
             u = self.minDistance(dist, sptSet)
+            if u == -1:  # No reachable nodes found
+                break
             sptSet[u] = True
+            visited.add(u)
             for v in range(self.V):
                 if (self.graph[u][v] > 0 and 
                     sptSet[v] == False and 
                     dist[v] > dist[u] + self.graph[u][v]):
                     dist[v] = dist[u] + self.graph[u][v]
+        
+        # Print isolated nodes (nodes not visited during traversal)
+        isolated_nodes = set(range(self.V)) - visited
+        if isolated_nodes:
+            print(f"\nIsolated nodes from source {src}:", list(isolated_nodes))
         
         self.printSolution(dist, src)
         return dist
