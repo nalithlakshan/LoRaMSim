@@ -130,7 +130,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     enddevices.append(node(env, 4.20*d, 3.15*d, "ed"))
     enddevices.append(node(env, 3.80*d, 3.60*d, "ed"))
     enddevices.append(node(env, 2.35*d, 1.60*d, "ed"))
-    enddevices.append(node(env, 2.25*d, 2.25*d, "ed"))
+    enddevices.append(node(env, 2.15*d, 1.95*d, "ed"))
     enddevices.append(node(env, 1.55*d, 3.25*d, "ed"))
     enddevices.append(node(env, 1.10*d, 3.60*d, "ed"))
 

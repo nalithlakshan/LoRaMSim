@@ -490,7 +490,7 @@ class node():
             global ax
             if  (self.type.lower() == "ed"):
                 self.icon = ax.add_artist(plt.Circle((self.x, self.y), 2, fill=True, color='blue'))
-                self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
+                self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id, color='#888888'))
             elif(self.type.lower() == "rp"):
                 self.icon = ax.add_artist(plt.Circle((self.x, self.y), 4, fill=True, color='green'))
                 self.label = ax.add_artist(plt.text(self.x+6,self.y,self.id))
@@ -905,7 +905,7 @@ class node():
 
     def receive(self, env, packet, seqNr, prevDistanceValue, nextRp, prevRp):
         global nodes
-        yield env.timeout(repeaterProcessingTime) #wait for the processing time
+        # yield env.timeout(repeaterProcessingTime) #wait for the processing time
 
         if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
             self.lowerDistanceRecBuffer.append([seqNr, nodes[prevRp].batteryPercentage, prevRp])
@@ -1020,11 +1020,11 @@ class node():
                     self.awaitingToSendWorAck = 1
                     self.toWhichEdAmIAwaitingToSendAck.append(prevRp)
                     self.worAckReceived = 0
-                    yield env.timeout(random.expovariate(1.0/float(packet.rectime*repeatDelayMultiplier)))
-                    # yield env.timeout(random.uniform(0, 100))
+                    yield env.timeout(random.uniform(packet.rectime*0.0, packet.rectime*4.0))
+                    # yield env.timeout(random.expovariate(1.0/float(packet.rectime*repeatDelayMultiplier)))
                     if(carrier_sensing_rp ==1):
                         while(len(self.packetSourcesAtRx) != 0):
-                            yield env.timeout(1)
+                            yield env.timeout(random.uniform(1,10))
 
                     if(self.awaitingToSendWorAck == 1):
                         
@@ -1037,7 +1037,7 @@ class node():
 
                             if(carrier_sensing_rp ==1):
                                 while(len(self.packetSourcesAtRx) != 0):
-                                    yield env.timeout(1)
+                                    yield env.timeout(random.uniform(1,10))
 
                             if((self.worAckReceived == 1 or self.awaitingToSendWorAck == 0) and pktType=="WOR_up"):
                                 if(debug):
