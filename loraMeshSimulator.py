@@ -13,6 +13,7 @@ env = simpy.Environment()
 
 # Debug Mode
 debug = 1
+state_data_logging = False
 
 # turn on/off graphics
 graphics = 1
@@ -484,6 +485,12 @@ class node():
         # self.battery_status_file.write("initiated file for node"+str(self.id)+"\n")
         self.battery_status_file.write(f"{self.id},{env.now},{self.batteryRemaining},{round(self.batteryPercentage,2)}\n")
 
+        # State diagram data file
+        if(state_data_logging):
+            state_diagram_file_name = 'state diagram data/dump_node_'+ str(self.id)+'.txt'       
+            self.state_diagram_file = open(state_diagram_file_name, 'w')
+            self.state_diagram_file.write(f"{env.now} {self.mode}\n")
+
         # graphics for node
         global graphics
         if (graphics == 1):
@@ -500,8 +507,21 @@ class node():
             else:
                 print("Incorrect device type!")
 
-    def setIconColorByMode(self, lineNo = 0):
+    def setIconColorByMode(self, env, lineNo = 0):
         global graphics
+        global state_data_logging
+
+        if(state_data_logging):
+            # Record state change in state diagram file
+            if self.mode == "TX":
+                # For TX mode, write both preamble and frame timing
+                self.state_diagram_file.write(f"{env.now} TX_preamble\n")
+                self.state_diagram_file.write(f"{env.now + self.tx_activity['preamble_duration']} TX_frame\n")
+            else:
+                # For all other modes, write single state
+                self.state_diagram_file.write(f"{env.now} {self.mode}\n")
+            self.state_diagram_file.flush()  # Ensure writing to disk immediately
+        
         if (graphics == 1):
             if (self.mode == "CAD" or self.mode == "SLEEP"):
                 if self.type.lower() == "ed":
@@ -715,7 +735,7 @@ class node():
         while(True):
             self.mode = "CAD"
             self.batteryUpdate(env, self.currentCad)
-            self.setIconColorByMode(get_linenumber())
+            self.setIconColorByMode(env, get_linenumber())
             yield env.timeout(random.expovariate(1.0/float(self.period)))
 
             packetSeq = packetSeq + 1
@@ -726,7 +746,7 @@ class node():
 
             self.mode = "RX"
             self.batteryUpdate(env, self.currentRx)
-            self.setIconColorByMode(get_linenumber())
+            self.setIconColorByMode(env, get_linenumber())
 
             #carrier sensing
             if(carrier_sensing_ed ==1): 
@@ -760,7 +780,7 @@ class node():
 
                     self.mode = "RX"
                     self.batteryUpdate(env, self.currentRx)
-                    self.setIconColorByMode(get_linenumber())
+                    self.setIconColorByMode(env, get_linenumber())
                     k = 0
                     while (self.worAckReceived == 0):
                         yield env.timeout(1) #waiting for WOR ACK
@@ -819,7 +839,7 @@ class node():
         global fignum
         self.mode = "TX"
         self.batteryUpdate(env, self.currentTx)
-        self.setIconColorByMode(get_linenumber())
+        self.setIconColorByMode(env, get_linenumber())
 
         if(debug):
             # print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}|{self.tx_activity['tx_packet_type']}")
@@ -864,6 +884,7 @@ class node():
         self.tx_status_file.write(" "+str(env.now)+"\n")
         self.mode = "RX"
         self.batteryUpdate(env, self.currentRx)
+        self.setIconColorByMode(env, get_linenumber())
 
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
@@ -1062,7 +1083,7 @@ class node():
                             if(self.worAckReceived!=0 and self.awaitingToSendWorAck==0 and len(self.packetsFifo.items)==0 and self.standbyBufferCount==0):
                                 self.mode = "CAD"
                                 self.batteryUpdate(env, self.currentCad)
-                                self.setIconColorByMode(get_linenumber())
+                                self.setIconColorByMode(env, get_linenumber())
                                 self.worAckReceived = -1
                             return 0
 
@@ -1119,13 +1140,13 @@ class node():
                                                     print(f"-*-*-*-Node {self.id} standby period ends with Sb={standby} Pkt-type={packet.packetType} (seqNr:{seqNr})") 
                                                 self.mode = "CAD"
                                                 self.batteryUpdate(env, self.currentCad)
-                                                self.setIconColorByMode(get_linenumber())
+                                                self.setIconColorByMode(env, get_linenumber())
                                                 self.worAckReceived = -1
 
                                     elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="gw" and packet.packetType=="DATA_up" and (len(self.packetsFifo.items) == 0) and self.awaitingToSendWorAck==0 and self.standbyBufferCount==0):
                                         self.mode = "CAD"
                                         self.batteryUpdate(env, self.currentCad)
-                                        self.setIconColorByMode(get_linenumber())
+                                        self.setIconColorByMode(env, get_linenumber())
                                         self.worAckReceived = -1
                                         # print(f"-*-*-*-Node {self.id} going to CAD mode as nextRp is GW (seqNr:{seqNr})")
 
@@ -1171,7 +1192,7 @@ class node():
                             elif(self.distanceValue > prevDistanceValue and nodes[prevRp].type.lower()!="ed" and packet.packetType=="WOR_up" and len(self.packetsFifo.items)==0):
                                 self.mode = "CAD"
                                 self.batteryUpdate(env, self.currentCad)
-                                self.setIconColorByMode(get_linenumber())
+                                self.setIconColorByMode(env, get_linenumber())
                                 self.worAckReceived = -1
 
                     else:
@@ -1280,7 +1301,7 @@ class node():
             return 0
         self.mode = "CAD"
         self.batteryUpdate(env, self.currentCad)
-        self.setIconColorByMode(get_linenumber())
+        self.setIconColorByMode(env, get_linenumber())
         # if((env.now - self.lastCadScanTime)%self.cadPeriodity != 0):
         #     yield env.timeout(self.cadPeriodity - (env.now - self.lastCadScanTime)%self.cadPeriodity)
 
@@ -1295,7 +1316,7 @@ class node():
                     if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
                         self.mode = "RX"
                         self.batteryUpdate(env, self.currentRx)
-                        self.setIconColorByMode(get_linenumber())
+                        self.setIconColorByMode(env, get_linenumber())
                         if(debug):
                             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
 
@@ -1303,12 +1324,23 @@ class node():
             if(self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+10000) < env.now):
                 self.mode = "CAD"
                 self.batteryUpdate(env, self.currentCad)
-                self.setIconColorByMode(get_linenumber())
+                self.setIconColorByMode(env, get_linenumber())
                 self.worAckReceived = -1
                 if(debug):
                     print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Switching back to CAD mode after idling in RX")
-                
-            yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
+
+            global state_data_logging
+            if(state_data_logging):    
+                yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2)
+                if(self.mode == "CAD"):
+                    self.state_diagram_file.write(f"{env.now} CAD_Scan_rise\n")
+                    yield env.timeout(1)
+                    self.state_diagram_file.write(f"{env.now} CAD_Scan_fall\n")
+                    yield env.timeout(1)
+                else:
+                    yield env.timeout(2)
+            else:
+                yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
 
             #Exit CAD function after the end of the simulation
             if(lastPacketGenTime!= 0 and env.now > (lastPacketGenTime + 3600000)):
@@ -1327,7 +1359,7 @@ class node():
 
         self.mode = "RX"
         self.batteryUpdate(env, self.currentRx)
-        self.setIconColorByMode(get_linenumber())
+        self.setIconColorByMode(env, get_linenumber())
 
         # yield env.timeout(random.expovariate(1.0/float(nodes[prevRp].packet[0].rectime*repeatDelayMultiplier))) #wait random time with mean =airtime*repeatDelayMultiplier
         yield env.timeout(random.expovariate(1.0/10)) #wait random time with mean =10 ms
@@ -1359,7 +1391,7 @@ class node():
         self.tx_status_file.write(str(env.now))
         self.mode = "TX"
         self.batteryUpdate(env, self.currentTx)
-        self.setIconColorByMode(get_linenumber())
+        self.setIconColorByMode(env, get_linenumber())
 
         if(debug):
             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Forwarded Packet:{seqNr}")
@@ -1412,17 +1444,17 @@ class node():
             if((self.packet[0].packetType == "DATA_up" or self.packet[0].packetType == "DATA_down") and (len(self.packetsFifo.items) == 0)):
                 self.mode = "CAD"
                 self.batteryUpdate(env, self.currentCad)
-                self.setIconColorByMode(get_linenumber())
+                self.setIconColorByMode(env, get_linenumber())
                 self.worAckReceived = -1
 
             else:
                 self.mode = "RX"
                 self.batteryUpdate(env, self.currentRx)
-                self.setIconColorByMode(get_linenumber())
+                self.setIconColorByMode(env, get_linenumber())
         else:
             self.mode = "RX"
             self.batteryUpdate(env, self.currentRx)
-            self.setIconColorByMode(get_linenumber())
+            self.setIconColorByMode(env, get_linenumber())
 
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
