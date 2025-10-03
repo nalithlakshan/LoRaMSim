@@ -40,7 +40,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 0
+    sim.realtime_graphics = 1
     sim.debug = 0
 
     sim.positional_algo = True
@@ -310,7 +310,7 @@ if __name__ == "__main__":
     
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
-    parser.add_argument("-avg_send_time"             , default=360000 , help="Average time period of an end-device sending a packet")
+    parser.add_argument("-avg_send_time"             , default=36000000 , help="Average time period of an end-device sending a packet")
     parser.add_argument("-total_sim_packets"         , default=5000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments

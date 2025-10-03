@@ -72,7 +72,7 @@ def plot_state_diagrams(file_list):
         
         # Set y-axis ticks and labels
         y_ticks = [1, 50, 500]
-        y_labels = ['CAD (1mA)', 'RX (50mA)', 'TX (500mA)']
+        y_labels = ['CAD (11uA)', 'RX (50mA)', 'TX (500mA)']
         ax.set_yticks(y_ticks)
         ax.set_yticklabels(y_labels)
         
