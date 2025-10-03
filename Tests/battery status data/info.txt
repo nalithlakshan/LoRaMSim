@@ -1,0 +1,1 @@
+This folder populates data dumps of remaining battery status over time for each node. 

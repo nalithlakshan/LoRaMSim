@@ -4,6 +4,7 @@ import numpy as np
 import math
 import os
 from inspect import currentframe
+from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.image as mpimg
@@ -34,6 +35,7 @@ standby_repeater_algo = True
 energy_aware_algo = True
 repeater_sleep_algo = True
 repeater_synchronization_algo = True
+wor_preamble_shrinking_algo = True
 
 total_stanby = 0
 standby_retains = 0
@@ -358,6 +360,23 @@ def run_position_learning():
     # for i in range(len(nextNodeUp)):
     #     print(i, "\t\t", nextNodeUp[i], "\t\t", mainNodes[i].neighbor_ids)
 
+    for i in range(len(nodes)):
+        if nodes[i].type == "rp":
+            hops = 0
+            current = i
+            # Traverse nextRp until reaching a gateway
+            while nodes[current].type != "gw":
+                next_rp = nodes[current].nextRp
+                if next_rp == -1 or next_rp == current:
+                    # Prevent infinite loop or dead end
+                    break
+                hops += 1
+                current = next_rp
+            nodes[i].syncLevel = hops
+            if(hops == 1):
+                nodes[i].worUpPacketHistory = deque([0]*(hops+1), maxlen=(hops+1))
+            elif(hops > 1):
+                nodes[i].worUpPacketHistory = deque([0]*(hops+1), maxlen=(hops+1))
 
 
 #debugging function to get current line number
@@ -433,16 +452,29 @@ class node():
         }
 
         #Power Consumption
+        #------------------------------
+        # Let's assume we are using a repeater made with 3 of RAK3172 modules
+        # --> 1st one acting as the master, listening on RP Data channel, transmitting on all channels
+        # --> 2nd one acting as a slave, listening on ED Data channel
+        # --> 3rd one acting as a slave, listening on WOR channel
+        #
+        # Power consumptions calculated using RAK3172 datasheet:
+        # TX Mode   : ~100mA + 5mA*2 = 110 mA (1 module in TX mode, other 2 active) 
+        # RX Mode   : ~5 mA*3 = 15mA (3 modules in RX mode)
+        # Sleep Mode: ~1.69 µA*3 = 5 µA (3 modules in Sleep mode)
+        # CAD Mode  : (2*1.69*1000ms + 1.69*998ms + 5220*2ms)/1000ms = ~15uA (2 modules in sleep, 1 in CAD mode)
+        #------------------------------
         self.batteryCapacity  = 100 #mAh
         self.batteryRemaining = 100 #mAh
         self.batteryPercentage = 100
         self.batteryDischargeRate = 1 #mA
         self.batteryLastRecordedTime = 0
-        # self.currentRx = 81.6 #mA
-        # self.currentTx = 512 #mA
-        self.currentRx = 50 #mA
-        self.currentTx = 500 #mA
-        self.currentCad = 0.011 #11uA in average
+        self.txPowerConsumption = 0
+        self.rxPowerConsumption = 0
+        self.cadPowerConsumption = 0
+        self.currentRx = 15 #mA 
+        self.currentTx = 110 #mA 
+        self.currentCad = 0.015 #15uA in average
         self.cadPeriodity = 1000 #in ms
 
         # properties common for all types
@@ -478,6 +510,9 @@ class node():
 
         #Symchronization related
         self.cadTimingAdjustment = 0
+        self.driftError = 1000 #in ms
+        self.syncLevel = 0
+        self.worUpPacketHistory = None
 
         #data dump files
         tx_status_file_name = 'tx status data/dump_node_'+ str(self.id)+'.txt'       
@@ -554,6 +589,14 @@ class node():
         self.batteryPercentage = 100*self.batteryRemaining/self.batteryCapacity
         self.battery_status_file.write(f"{self.id},{env.now},{self.batteryRemaining},{round(self.batteryPercentage,2)}\n")
         self.batteryLastRecordedTime = env.now
+
+        if(self.batteryDischargeRate==self.currentTx):
+            self.txPowerConsumption += T*self.batteryDischargeRate
+        elif(self.batteryDischargeRate==self.currentRx):
+            self.rxPowerConsumption += T*self.batteryDischargeRate
+        elif(self.batteryDischargeRate==self.currentCad):
+            self.cadPowerConsumption += T*self.batteryDischargeRate
+
         self.batteryDischargeRate = dischargeRate
         
 
@@ -933,6 +976,7 @@ class node():
         # yield env.timeout(repeaterProcessingTime) #wait for the processing time
 
         if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
+            self.cadScanSyncProcess(env, packet, seqNr, prevRp)
             self.lowerDistanceRecBuffer.append([seqNr, nodes[prevRp].batteryPercentage, prevRp])
             if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[prevRp].type.lower() != "ed" and self.nearestGwId==nodes[prevRp].nearestGwId and self.worAckReceived==0):
                 self.worAckReceived = 1
@@ -944,8 +988,6 @@ class node():
                 self.toWhichEdAmIAwaitingToSendAck.remove(packet.nodeAcknowledged)
                 if len(self.toWhichEdAmIAwaitingToSendAck) == 0:
                     self.awaitingToSendWorAck = 0
-        
-        self.cadScanSyncProcess(env, packet, prevRp)
 
         if (seqNr not in self.recPackets):
             self.recPackets.append(seqNr) 
@@ -961,16 +1003,21 @@ class node():
             if(repeater_sleep_algo):
 
                 if(packet.packetType == "WOR_up" and (packet.intendedRxNodeId == self.id or packet.intendedRxNodeId == -1)):
+
+                    premlen = self.tPreamToPremlen(self.cadPeriodity)
+                    yield  env.timeout(self.timeTillNextWorTxBegin(env, premlen))
+                    if(carrier_sensing_rp ==1):
+                        while(len(self.packetSourcesAtRx) != 0):
+                            yield env.timeout(self.cadPeriodity)
+
                     self.packetsFifo.put(packet)
                     with self.nTransmitters.request() as req:
                         yield req
                         outputPacket = yield self.packetsFifo.get()
 
                         if(carrier_sensing_rp ==1):
-                            while(True):
-                                if(len(self.packetSourcesAtRx) == 0): 
-                                    break
-                                yield env.timeout(random.expovariate(1.0/float(outputPacket.rectime*repeatDelayMultiplier)))
+                            while(len(self.packetSourcesAtRx) != 0):
+                                yield env.timeout(self.cadPeriodity)
                         
                         if(outputPacket.packetType == "WOR_up"):
                             self.tx_activity["active"] = True
@@ -1053,9 +1100,7 @@ class node():
                         while(len(self.packetSourcesAtRx) != 0):
                             yield env.timeout(random.uniform(1,10))
 
-                    worPreambleTime = 1000 #in ms
-                    premlen = self.tPreamToPremlen(worPreambleTime) # in symbols
-                    worPreambleTime = self.premlenToTPream(premlen) # in ms with a random factor added
+                    premlen = self.worPremlenCalc(env) # WOR preamble size in symbols with a random factor added
                     yield  env.timeout(self.timeTillNextWorTxBegin(env, premlen))
                     if(carrier_sensing_rp ==1):
                         while(len(self.packetSourcesAtRx) != 0):
@@ -1315,11 +1360,16 @@ class node():
 
         if(repeater_sleep_algo==0):
             return 0
-        self.mode = "CAD"
-        self.batteryUpdate(env, self.currentCad)
+        
+        if(self.type.lower() == "gw"):
+            self.mode = "RX"
+            self.batteryUpdate(env, self.currentRx)
+        else:
+            self.mode = "CAD"
+            self.batteryUpdate(env, self.currentCad)
         self.setIconColorByMode(env, get_linenumber())
-        # if((env.now - self.lastCadScanTime)%self.cadPeriodity != 0):
-        #     yield env.timeout(self.cadPeriodity - (env.now - self.lastCadScanTime)%self.cadPeriodity)
+
+        yield env.timeout(random.uniform(0, self.cadPeriodity)) #initial random delay to make nodes unsynchronized
 
         while(True):
 
@@ -1336,7 +1386,7 @@ class node():
                             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
 
             #if stuck in RX mode and idling somehow, go back to CAD
-            if(self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+10000) < env.now):
+            if(self.type.lower()!="gw" and self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+10000) < env.now):
                 self.mode = "CAD"
                 self.batteryUpdate(env, self.currentCad)
                 self.setIconColorByMode(env, get_linenumber())
@@ -1344,7 +1394,7 @@ class node():
                 if(debug):
                     print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Switching back to CAD mode after idling in RX")
 
-            if(state_data_logging):    
+            if(state_data_logging and self.type.lower() !="gw"):    
                 if(self.cadTimingAdjustment != 0):
                     yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2 +self.cadTimingAdjustment)
                     self.cadTimingAdjustment = 0
@@ -1386,9 +1436,9 @@ class node():
         Twait = timeTillNextCadRef - Tpream/2
         if(Twait < 0):
             Twait = Twait + self.cadPeriodity
-
         return Twait
     
+
     def tPreamToPremlen(self, Tpream):
         sf = 7
         bw = 500
@@ -1396,15 +1446,38 @@ class node():
         premlen = int(Tpream/Tsym - 4.25) +random.choice([0,1,2,3,4,5,6,7,8,9,10])
         return premlen
     
+
     def premlenToTPream(self, premlen):
         sf = 7
         bw = 500
         Tsym = (2.0**sf)/bw
         Tpream = (premlen + 4.25)*Tsym
         return Tpream
+    
 
+    def worPremlenCalc(self, env):
+        global nodeClockAccuracy
+        global wor_preamble_shrinking_algo
 
-    def cadScanSyncProcess(self, env, packet, prevRp):
+        if(wor_preamble_shrinking_algo==0):
+            return self.tPreamToPremlen(self.cadPeriodity) #default preamble length equal to CAD periodicity
+        
+        if(self.worUpPacketHistory[0] == 0):
+            return self.tPreamToPremlen(self.cadPeriodity) #default preamble length, no sycnhronization yet
+        
+        sf = 7
+        bw = 500
+        Tsym = (2.0**sf)/bw
+        Tpream = 2*(env.now - self.worUpPacketHistory[0])*(nodeClockAccuracy/1000000)+ (1+6+8)*Tsym
+        if(debug):
+            print(f"Node {self.id}({self.type.upper()}) Tpream:{round(Tpream,2)} history:{self.worUpPacketHistory}")
+        if(Tpream >= self.cadPeriodity):
+            return self.tPreamToPremlen(self.cadPeriodity)
+        else:
+            return self.tPreamToPremlen(Tpream)
+        
+
+    def cadScanSyncProcess(self, env, packet, seqNr, prevRp):
         global repeater_synchronization_algo
         global nodes
         if(repeater_synchronization_algo==False):
@@ -1413,19 +1486,31 @@ class node():
         if(nodes[prevRp].nearestGwId != self.nearestGwId):
             return 0
         
-        if((nodes[prevRp].distanceValue < self.distanceValue) and (packet.packetType=="WOR_up" or packet.packetType=="WOR_down")):
+        for item in self.lowerDistanceRecBuffer: #previously processed
+            if (item[0] == seqNr):
+                return 0
+
+        if(nodes[prevRp].type.lower()!="ed" and (nodes[prevRp].distanceValue < self.distanceValue) and (packet.packetType=="WOR_up" or packet.packetType=="WOR_down") and self.nearestGwId==nodes[prevRp].nearestGwId):
+            
+            #keeping record of WOR packets from nodes closer to the gateway for calculating drift error
+            if(packet.packetType=="WOR_up"):
+                self.worUpPacketHistory.append(env.now)
+            elif(packet.packetType=="WOR_down"):
+                self.worUpPacketHistory.clear()
+                self.worUpPacketHistory.extend([env.now]*self.worUpPacketHistory.maxlen)
+
+            #calculating the CAD timing adjustment
             Tlast = self.lastCadScanTime + self.cadPeriodity*((env.now-self.lastCadScanTime)//self.cadPeriodity)
             Tf = packet.addTime + packet.Tprem
             Tref = Tf - packet.Tprem/2  #Equation 8 from paper
             self.cadTimingAdjustment = Tref - Tlast
-
             if(self.cadTimingAdjustment > self.cadPeriodity):
                 self.cadTimingAdjustment = self.cadTimingAdjustment - self.cadPeriodity
             elif(self.cadTimingAdjustment < (-self.cadPeriodity)):
                 self.cadTimingAdjustment = self.cadTimingAdjustment + self.cadPeriodity
 
             if(debug):
-                print(f"Node {self.id}({self.type.upper()}) adjusted CAD scan timing by {round(self.cadTimingAdjustment,2)} ms in reference to packet from Node {prevRp.id}({prevRp.type.upper()})")
+                print(f"Node {self.id}({self.type.upper()}) adjusted CAD scan timing by {round(self.cadTimingAdjustment,2)} ms in reference to packet from Node {nodes[prevRp].id}({nodes[prevRp].type.upper()})")
 
 
     def repeat(self, env, seqNr, prevRp, nodeAcknowledged=-1):
@@ -1446,9 +1531,7 @@ class node():
         yield env.timeout(random.expovariate(1.0/10)) #wait random time with mean =10 ms
 
         if(pktType == "WOR_up" or pktType == "WOR_down"):
-            worPreambleTime = 1000 #in ms
-            premlen = self.tPreamToPremlen(worPreambleTime) # in symbols
-            worPreambleTime = self.premlenToTPream(premlen) # in ms with a random factor added
+            premlen = self.worPremlenCalc(env) # WOR preamble size in symbols with a random factor added
             yield  env.timeout(self.timeTillNextWorTxBegin(env, premlen))
             if(carrier_sensing_rp ==1):
                 while(len(self.packetSourcesAtRx) != 0):

@@ -40,12 +40,12 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 1
+    sim.realtime_graphics = 0
     sim.debug = 0
 
     sim.positional_algo = True
     sim.standby_repeater_algo = True
-    sim.energy_aware_algo = False
+    sim.energy_aware_algo = True
 
     sim.totalSimPackets = total_sim_packets
 
@@ -107,52 +107,15 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
     sim.networkConfig()
 
-    print("Node 0 distanceValue:", nodes[0].distanceValue)
-    print("Node 1 distanceValue:", nodes[1].distanceValue)
-    print("Node 2 distanceValue:", nodes[2].distanceValue)
-    print("Node 3 distanceValue:", nodes[3].distanceValue)
-    print("Node 4 distanceValue:", nodes[4].distanceValue)
-    print("Node 5 distanceValue:", nodes[5].distanceValue)
-    print("Node 6 distanceValue:", nodes[6].distanceValue)
-    print("Node 7 distanceValue:", nodes[7].distanceValue)
-    print("Node 8 distanceValue:", nodes[8].distanceValue)
-    print("Node 9 distanceValue:", nodes[9].distanceValue)
-    print("Node 10 distanceValue:", nodes[10].distanceValue)
-    print("Node 11 distanceValue:", nodes[11].distanceValue)
-    print("Node 12 distanceValue:", nodes[12].distanceValue)
-    print("Node 13 distanceValue:", nodes[13].distanceValue)
-    print("Node 14 distanceValue:", nodes[14].distanceValue)
-    print("Node 15 distanceValue:", nodes[15].distanceValue)
-    print("Node 16 distanceValue:", nodes[16].distanceValue)
-    print("Node 17 distanceValue:", nodes[17].distanceValue)
-    print("Node 18 distanceValue:", nodes[18].distanceValue)
-
-    print("Node 0 nextRp:", nodes[0].nextRp, "nearest GW", nodes[0].nearestGwId)
-    print("Node 1 nextRp:", nodes[1].nextRp, "nearest GW", nodes[1].nearestGwId)
-    print("Node 2 nextRp:", nodes[2].nextRp, "nearest GW", nodes[2].nearestGwId)
-    print("Node 3 nextRp:", nodes[3].nextRp, "nearest GW", nodes[3].nearestGwId)
-    print("Node 4 nextRp:", nodes[4].nextRp, "nearest GW", nodes[4].nearestGwId)
-    print("Node 5 nextRp:", nodes[5].nextRp, "nearest GW", nodes[5].nearestGwId)
-    print("Node 6 nextRp:", nodes[6].nextRp, "nearest GW", nodes[6].nearestGwId)
-    print("Node 7 nextRp:", nodes[7].nextRp, "nearest GW", nodes[7].nearestGwId)
-    print("Node 8 nextRp:", nodes[8].nextRp, "nearest GW", nodes[8].nearestGwId)
-    print("Node 9 nextRp:", nodes[9].nextRp, "nearest GW", nodes[9].nearestGwId)
-    print("Node 10 nextRp:", nodes[10].nextRp, "nearest GW", nodes[10].nearestGwId)
-    print("Node 11 nextRp:", nodes[11].nextRp, "nearest GW", nodes[11].nearestGwId)
-    print("Node 12 nextRp:", nodes[12].nextRp, "nearest GW", nodes[12].nearestGwId)
-    print("Node 13 nextRp:", nodes[13].nextRp, "nearest GW", nodes[13].nearestGwId)
-    print("Node 14 nextRp:", nodes[14].nextRp, "nearest GW", nodes[14].nearestGwId)
-    print("Node 15 nextRp:", nodes[15].nextRp, "nearest GW", nodes[15].nearestGwId)
-    print("Node 16 nextRp:", nodes[16].nextRp, "nearest GW", nodes[16].nearestGwId)
-    print("Node 17 nextRp:", nodes[17].nextRp, "nearest GW", nodes[17].nearestGwId)
-    print("Node 18 nextRp:", nodes[18].nextRp, "nearest GW", nodes[18].nearestGwId)
+    for i in range(19):
+        print(f"Node {i}\t", "distanceValue:", round(nodes[i].distanceValue,2),"\tnextRp:",  nodes[i].nextRp, "\tnearest GW:", nodes[i].nearestGwId, "\tsyncLevel:", nodes[i].syncLevel)
 
 
     #Sensor Network
     for i in range(len(nodes)):
         if (nodes[i].type.lower() == "ed"):
             env.process(nodes[i].endDeviceStateMachine(env))
-        if (nodes[i].type.lower() == "rp"):
+        if (nodes[i].type.lower() != "ed"):
             env.process(nodes[i].enableCad(env))
 
     #prepare show
@@ -227,11 +190,19 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
                     
     total_ed_tx_losses = total_ed_tx_pkts - total_ed_tx_successes
 
+    total_tx_power_consumption = 0
+    total_rx_power_consumption = 0
+    total_cad_power_consumption = 0
     for i in range(no_of_repeaters):
         rp = repeaters[i]
         pkts_rec_by_rp = 0
         pkts_fwd_by_rp = 0
         total_power_consumption += rp.batteryCapacity - rp.batteryRemaining
+        total_tx_power_consumption += rp.txPowerConsumption
+        total_rx_power_consumption += rp.rxPowerConsumption
+        total_cad_power_consumption += rp.cadPowerConsumption
+
+
 
         for pkt in rp.recPackets:
             edId,packetSeq,genTime,pktType =pkt.split("|")
@@ -261,9 +232,13 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     print("\nTotal Standy \t:",sim.total_stanby)
     print("---> Standby Retains \t\t:",sim.standby_retains)
     print("---> Standby Recoveries \t:",sim.standby_recoveries,"\n")
-    print("---> Energy Aware Repeater Role Changes \t:",sim.repeater_role_changes,"\n")
+    print("---> Energy Aware Repeater Role Changes \t:",sim.repeater_role_changes)
 
-    print("\nTotal Power Consumption :", total_power_consumption)
+    print("\nTotal Power Consumption \t:", total_power_consumption,"mAh")
+    print("---> Total Tx Power Consumption :", total_tx_power_consumption, "mAh")
+    print("---> Total Rx Power Consumption :", total_rx_power_consumption, "mAh")
+    print("---> Total CAD Power Consumption:", total_cad_power_consumption, "mAh")
+
 
     # data extraction rate
     der = total_pkts_rec_by_bs/float(total_sim_packets)
@@ -272,7 +247,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
 
     # Append Test to Excel Sheet
-    file_path = "representative_network_1_sim_outputs.xlsx"
+    file_path = "representative_network_2_sim_outputs.xlsx"
     sheet_name = "Sheet1"
     values_to_append = []
     values_to_append.append(sim.experiment)
@@ -288,6 +263,8 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     values_to_append.append(sim.packetLatencies[0])
     values_to_append.append("---> Max Latency:")
     values_to_append.append(sim.packetLatencies[-1])
+    values_to_append.append("---> Total Power:")
+    values_to_append.append(total_power_consumption)
     # values_to_append.append("---> Total Collisions:")
     # values_to_append.append(len(sim.collidedPackets))
     # values_to_append.append("---> Total Lost Pkts:")
@@ -311,7 +288,7 @@ if __name__ == "__main__":
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
     parser.add_argument("-avg_send_time"             , default=36000000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=5000 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()

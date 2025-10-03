@@ -1,0 +1,1 @@
+This folder populates data dumps of time intervals during which each node remained in the TX state. 

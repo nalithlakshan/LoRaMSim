@@ -46,7 +46,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
     sim.positional_algo = True
     sim.standby_repeater_algo = True
-    sim.energy_aware_algo = False
+    sim.energy_aware_algo = True
 
     sim.totalSimPackets = total_sim_packets
 
@@ -152,7 +152,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     for i in range(len(nodes)):
         if (nodes[i].type.lower() == "ed"):
             env.process(nodes[i].endDeviceStateMachine(env))
-        if (nodes[i].type.lower() == "rp"):
+        else:
             env.process(nodes[i].enableCad(env))
 
     #prepare show
@@ -272,7 +272,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
 
     # Append Test to Excel Sheet
-    file_path = "representative_network_1_sim_outputs.xlsx"
+    file_path = "representative_network_3_sim_outputs.xlsx"
     sheet_name = "Sheet1"
     values_to_append = []
     values_to_append.append(sim.experiment)

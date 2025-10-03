@@ -95,5 +95,5 @@ def plot_state_diagrams(file_list):
     plt.show()
 
 # Example usage
-file_list = ["dump_node_1.txt", "dump_node_2.txt", "dump_node_3.txt", "dump_node_4.txt"]
+file_list = ["dump_node_0.txt", "dump_node_1.txt", "dump_node_2.txt", "dump_node_3.txt", "dump_node_4.txt"]
 plot_state_diagrams(file_list)
