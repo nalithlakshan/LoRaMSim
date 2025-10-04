@@ -34,8 +34,8 @@ positional_algo = True
 standby_repeater_algo = True
 energy_aware_algo = True
 repeater_sleep_algo = True
-repeater_synchronization_algo = True
-wor_preamble_shrinking_algo = True
+repeater_synchronization_algo = False
+wor_preamble_shrinking_algo = False
 
 total_stanby = 0
 standby_retains = 0
@@ -105,6 +105,7 @@ collidedPackets=[]
 lostPackets = []
 #global packet seq numbers received at gateways
 packetsRecBS = []
+lastTimePacketRecBS = 0
 Q1_time = 0
 Q2_time = 0
 Q3_time = 0
@@ -112,7 +113,7 @@ predicted_DER = 1
 packetLatencies = []
 
 # WOR and CAD related
-nodeClockAccuracy = 2.5 #ppm
+nodeClockAccuracy = 20 #ppm
 
 # ----------------------------------------------------------------------------------
 #COLLISION CHECK
@@ -373,10 +374,9 @@ def run_position_learning():
                 hops += 1
                 current = next_rp
             nodes[i].syncLevel = hops
-            if(hops == 1):
-                nodes[i].worUpPacketHistory = deque([0]*(hops+1), maxlen=(hops+1))
-            elif(hops > 1):
-                nodes[i].worUpPacketHistory = deque([0]*(hops+1), maxlen=(hops+1))
+            if(hops >= 1):
+                nodes[i].worUpPacketHistory = deque([0]*(hops+2), maxlen=(hops+2))
+
 
 
 #debugging function to get current line number
@@ -973,6 +973,7 @@ class node():
 
     def receive(self, env, packet, seqNr, prevDistanceValue, nextRp, prevRp):
         global nodes
+        global lastTimePacketRecBS
         # yield env.timeout(repeaterProcessingTime) #wait for the processing time
 
         if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
@@ -1039,7 +1040,8 @@ class node():
                         x,y,t,pktType =seqNr.split("|")
                         latency = env.now -float(t)
                         # print("Latency:",latency)
-                        packetLatencies.append(latency)          
+                        packetLatencies.append(latency)  
+                        lastTimePacketRecBS = env.now        
             
             else:
                 #Do no more transmissions. Account the packets received.
@@ -1052,6 +1054,7 @@ class node():
                     latency = env.now -float(t)
                     # print("Latency:",latency)
                     packetLatencies.append(latency)
+                    lastTimePacketRecBS = env.now 
             
             #overall receiving rate calculation when 50% of the packets are received 
             global totalSimPackets
@@ -1325,14 +1328,14 @@ class node():
         x,y,t,pktType =seqNr.split("|")
 
         yield env.timeout(random.uniform(0.8*standByTime, 1.2*standByTime))
+
         # exactStandByTime = int(random.uniform(0.8*standByTime, 1.2*standByTime))
         # if(debug):
         #     print(f"Node {self.id}({self.type.upper()}) entering Standby for {exactStandByTime} ms at T={round(env.now,2)} (Pkt:{seqNr})")
-        
         # k = 0
-        # while(k < exactStandByTime):
+        # while(k < exactStandByTime/10):
         #     k +=1
-        #     yield env.timeout(1)
+        #     yield env.timeout(10)
         
         for item in self.lowerDistanceRecBuffer:
             if (item[0] == seqNr):
@@ -1357,6 +1360,8 @@ class node():
     def enableCad(self, env):
         global repeater_sleep_algo
         global state_data_logging
+        global lastTimePacketRecBS
+        global avgSendTime
 
         if(repeater_sleep_algo==0):
             return 0
@@ -1369,7 +1374,7 @@ class node():
             self.batteryUpdate(env, self.currentCad)
         self.setIconColorByMode(env, get_linenumber())
 
-        yield env.timeout(random.uniform(0, self.cadPeriodity)) #initial random delay to make nodes unsynchronized
+        # yield env.timeout(random.uniform(0, self.cadPeriodity)) #initial random delay to make nodes unsynchronized
 
         while(True):
 
@@ -1386,7 +1391,7 @@ class node():
                             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
 
             #if stuck in RX mode and idling somehow, go back to CAD
-            if(self.type.lower()!="gw" and self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+10000) < env.now):
+            if(self.type.lower()!="gw" and self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+6000) < env.now):
                 self.mode = "CAD"
                 self.batteryUpdate(env, self.currentCad)
                 self.setIconColorByMode(env, get_linenumber())
@@ -1394,28 +1399,32 @@ class node():
                 if(debug):
                     print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Switching back to CAD mode after idling in RX")
 
-            if(state_data_logging and self.type.lower() !="gw"):    
-                if(self.cadTimingAdjustment != 0):
-                    yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2 +self.cadTimingAdjustment)
-                    self.cadTimingAdjustment = 0
+            if(self.type.lower()!="gw"):
+                if(state_data_logging):    
+                    if(self.cadTimingAdjustment != 0):
+                        yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2 +self.cadTimingAdjustment)
+                        self.cadTimingAdjustment = 0
+                    else:
+                        yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2)
+                    if(self.mode == "CAD"):
+                        self.state_diagram_file.write(f"{env.now} CAD_Scan_rise\n")
+                        yield env.timeout(1)
+                        self.state_diagram_file.write(f"{env.now} CAD_Scan_fall\n")
+                        yield env.timeout(1)
+                    else:
+                        yield env.timeout(2)
                 else:
-                    yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy)-2)
-                if(self.mode == "CAD"):
-                    self.state_diagram_file.write(f"{env.now} CAD_Scan_rise\n")
-                    yield env.timeout(1)
-                    self.state_diagram_file.write(f"{env.now} CAD_Scan_fall\n")
-                    yield env.timeout(1)
-                else:
-                    yield env.timeout(2)
-            else:
-                if(self.cadTimingAdjustment != 0):
-                    yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy) +self.cadTimingAdjustment)
-                    self.cadTimingAdjustment = 0
-                else:
-                    yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
+                    if(self.cadTimingAdjustment != 0):
+                        yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy) +self.cadTimingAdjustment)
+                        self.cadTimingAdjustment = 0
+                    else:
+                        yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
+            else: #GW
+                self.lastCadScanTime = env.now #hypothetically for a reference
+                yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
           
             #Exit CAD function after the end of the simulation
-            if(lastPacketGenTime!= 0 and env.now > (lastPacketGenTime + 3600000)):
+            if((lastPacketGenTime!= 0 and env.now > (lastPacketGenTime + 3600000)) or (lastTimePacketRecBS < (env.now-avgSendTime*2))):
                 break
 
     
@@ -1468,7 +1477,9 @@ class node():
         sf = 7
         bw = 500
         Tsym = (2.0**sf)/bw
-        Tpream = 2*(env.now - self.worUpPacketHistory[0])*(nodeClockAccuracy/1000000)+ (1+6+8)*Tsym
+        delta = 2*nodeClockAccuracy/1000000
+        # Tpream = 2*delta*(env.now - self.worUpPacketHistory[0])+ (1+6+8)*Tsym
+        Tpream = 2*delta*(env.now - self.worUpPacketHistory[0])+ (50)*Tsym
         if(debug):
             print(f"Node {self.id}({self.type.upper()}) Tpream:{round(Tpream,2)} history:{self.worUpPacketHistory}")
         if(Tpream >= self.cadPeriodity):
