@@ -40,7 +40,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 0
+    sim.realtime_graphics = 1
     sim.debug = 0
 
     sim.positional_algo = True
@@ -91,7 +91,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     enddevices.append(node(env, 2.60*d, 1.10*d, "ed"))
     enddevices.append(node(env, 2.25*d, 0.80*d, "ed")) #junction 2
     enddevices.append(node(env, 1.90*d, 1.10*d, "ed")) 
-    enddevices.append(node(env, 1.50*d, 0.85*d, "ed"))
+    # enddevices.append(node(env, 1.50*d, 0.85*d, "ed"))
    
     enddevices.append(node(env, 4.10*d, 1.40*d, "ed")) #branch at j1
     enddevices.append(node(env, 4.20*d, 2.15*d, "ed"))
@@ -129,6 +129,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     env.run()
 
     #-----------------------------------------------------------------------
+    simulation_time = env.now/3600000 #in hours
     #Print simulation stat
     print ("No of nodes: ", len(nodes)) #FIX
     print ("AvgSendTime (exp. distributed):",sim.avgSendTime)
@@ -254,6 +255,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     values_to_append.append(no_of_repeaters)
     values_to_append.append(repeater_delay_multiplier)
     values_to_append.append(avg_send_time)
+    values_to_append.append(simulation_time)
     values_to_append.append(total_sim_packets)
     values_to_append.append("---> DER:")
     values_to_append.append(der)
@@ -271,6 +273,15 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     values_to_append.append(total_rx_power_consumption)
     values_to_append.append(" CAD:")
     values_to_append.append(total_cad_power_consumption)
+    values_to_append.append("---> Avg Power by RP per hour:")
+    values_to_append.append(total_power_consumption/(no_of_repeaters*simulation_time))
+    values_to_append.append("TX:")
+    values_to_append.append(total_tx_power_consumption/(no_of_repeaters*simulation_time))
+    values_to_append.append("RX:")
+    values_to_append.append(total_rx_power_consumption/(no_of_repeaters*simulation_time))
+    values_to_append.append("CAD:")
+    values_to_append.append(total_cad_power_consumption/(no_of_repeaters*simulation_time))
+    
     # values_to_append.append("---> Total Collisions:")
     # values_to_append.append(len(sim.collidedPackets))
     # values_to_append.append("---> Total Lost Pkts:")
@@ -293,7 +304,7 @@ if __name__ == "__main__":
     
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
-    parser.add_argument("-avg_send_time"             , default=36000000 , help="Average time period of an end-device sending a packet")
+    parser.add_argument("-avg_send_time"             , default=3600000 , help="Average time period of an end-device sending a packet")
     parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments

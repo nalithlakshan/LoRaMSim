@@ -18,7 +18,7 @@ state_data_logging = True
 
 # turn on/off graphics
 graphics = 1
-realtime_graphics = 1
+realtime_graphics = 0
 fignum = 1
 slideShowPause = 0.0 #number of seconds to pause OR 0 to wait until key press
 
@@ -34,8 +34,8 @@ positional_algo = True
 standby_repeater_algo = True
 energy_aware_algo = True
 repeater_sleep_algo = True
-repeater_synchronization_algo = False
-wor_preamble_shrinking_algo = False
+repeater_synchronization_algo = True
+wor_preamble_shrinking_algo = True
 
 total_stanby = 0
 standby_retains = 0
@@ -413,7 +413,7 @@ def networkConfig():
         current_script_path = os.path.abspath(__file__)
         current_script_directory = os.path.dirname(current_script_path)
         legendImg = mpimg.imread(current_script_directory+"/simulatorLegend.png")
-        ax.imshow(legendImg, extent=(xmax*0.03, xmax*0.19, ymax*0.08, ymax*0.32), aspect='auto')
+        ax.imshow(legendImg, extent=(xmax*0.01, xmax*0.25, ymax*0.01, ymax*0.32), aspect='auto')
 
 
 # ----------------------------------------------------------------------------------
@@ -523,6 +523,10 @@ class node():
         self.battery_status_file = open(battery_status_file_name, 'w')
         # self.battery_status_file.write("initiated file for node"+str(self.id)+"\n")
         self.battery_status_file.write(f"{self.id},{env.now},{self.batteryRemaining},{round(self.batteryPercentage,2)}\n")
+
+        #wor preamble time data files
+        wor_data_file_name = 'wor preamble data/dump_node_'+ str(self.id)+'.txt'       
+        self.wor_data_file = open(wor_data_file_name, 'w')
 
         # State diagram data file
         state_diagram_file_name = 'state diagram data/dump_node_'+ str(self.id)+'.txt'       
@@ -1374,7 +1378,7 @@ class node():
             self.batteryUpdate(env, self.currentCad)
         self.setIconColorByMode(env, get_linenumber())
 
-        # yield env.timeout(random.uniform(0, self.cadPeriodity)) #initial random delay to make nodes unsynchronized
+        yield env.timeout(random.uniform(0, self.cadPeriodity)) #initial random delay to make nodes unsynchronized
 
         while(True):
 
@@ -1437,6 +1441,12 @@ class node():
             Tpream = 1000 #ms
         else: 
             Tpream = (premlen + 4.25)*Tsym
+
+        if(self.type.lower()!="gw"):
+            if(Tpream>self.cadPeriodity):
+                self.wor_data_file.write(f"{self.cadPeriodity}\n")
+            else:
+                self.wor_data_file.write(f"{Tpream}\n")
         
         timeTillNextCadRef = (self.cadPeriodity - (env.now - self.lastCadScanTime)%self.cadPeriodity)
         if (timeTillNextCadRef == self.cadPeriodity):

@@ -7,6 +7,9 @@ Tests/tx status data/*.txt
 Tests/state diagram data/*.txt
 !Tests/state diagram data/info.txt
 
+Tests/wor preamble data/*.txt
+!Tests/wor preamble data/info.txt
+
 # Ignore plots
 Tests/plots/*.png
 
