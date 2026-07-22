@@ -18,7 +18,7 @@ state_data_logging = True
 
 # turn on/off graphics
 graphics = 1
-realtime_graphics = 0
+realtime_graphics = 1
 fignum = 1
 slideShowPause = 0.0 #number of seconds to pause OR 0 to wait until key press
 
@@ -32,10 +32,10 @@ carrier_sensing_rp = True
 #global awareness, routing, sleep algorithms
 positional_algo = True
 standby_repeater_algo = True
-energy_aware_algo = True
+energy_aware_algo = False
 repeater_sleep_algo = True
-repeater_synchronization_algo = True
-wor_preamble_shrinking_algo = True
+repeater_synchronization_algo = False
+wor_preamble_shrinking_algo = False
 
 total_stanby = 0
 standby_retains = 0
@@ -478,7 +478,7 @@ class node():
         self.cadPeriodity = 1000 #in ms
 
         # properties common for all types
-        self.antennaType = "single"  #single/dual
+        self.antennaType = "dual"  #single/dual
         self.packetSourcesAtRx = []
         self.recPackets = []
         self.txPackets = []
@@ -502,6 +502,10 @@ class node():
 
         # WOR and CAD related
         self.lastCadScanTime = 0
+        # Diagnostic state: CAD is a SimPy process, not just the value in mode.
+        self.cadProcessActive = False
+        self.cadExitTime = None
+        self.cadExitReason = None
         global nodeClockAccuracy
         self.clockAccuracy = random.uniform(-nodeClockAccuracy,nodeClockAccuracy)/1000000
         self.worAckReceived = -1    # -1 means not expecting ack, 0 means expecting ack, 1 means ack received
@@ -617,6 +621,13 @@ class node():
             Lpl = 0
         rssi = Ptx - GL - Lpl
         return rssi + random.uniform(-1, 1) #random noise added
+
+
+    def canReceivePacket(self):
+        """Return whether a receive antenna is available for packet delivery."""
+        return self.mode == "RX" or (
+            self.antennaType.lower() == "dual" and self.tx_activity["active"]
+        )
 
 
     def createPackets(self, packetType = "OTHER", premlen=8, intendedRxId=-1, nodeAcknowledged=-1, seqNr=None, addTime=None):
@@ -793,6 +804,11 @@ class node():
 
             if (packetSeq > totalSimPackets):
                 lastPacketGenTime = env.now
+                if(debug):
+                    print(
+                        f"[GEN_DONE] T={env.now:.2f} ED={self.id} packetSeq={packetSeq} "
+                        f"totalSimPackets={totalSimPackets} lastPacketGenTime={lastPacketGenTime:.2f}"
+                    )
                 break
 
             self.mode = "RX"
@@ -900,6 +916,27 @@ class node():
             self.packet[i].addTime = round(env.now, 1)
             if(seqNr != None):
                 self.packet[i].seqNr = seqNr            
+            # A dedicated receive antenna is isolated from this node's own
+            # transmission, so do not model the outgoing signal as an RX source.
+            if(i == self.id and self.antennaType.lower() == "dual"):
+                continue
+            if(
+                debug
+                and self.packet[i].packetType in ("WOR_up", "WOR_down")
+                and not self.packet[i].lost
+            ):
+                time_since_scan = (
+                    env.now - nodes[i].lastCadScanTime
+                    if nodes[i].lastCadScanTime != 0
+                    else None
+                )
+                print(
+                    f"[WOR_START] T={env.now:.2f} TX={self.id} RX={i} "
+                    f"seqNr={self.packet[i].seqNr} "
+                    f"mode={nodes[i].mode} cadProcessActive={nodes[i].cadProcessActive} "
+                    f"lastCadScanTime={nodes[i].lastCadScanTime:.2f} "
+                    f"timeSinceCadScan={time_since_scan}"
+                )
             if(self.packet[i].lost == 0): #checking if the packet reachs at node[i]
                 if (self in nodes[i].packetSourcesAtRx):
                     print("ERROR: packet",self.packet[i].seqNr, "from node",self.id,"is already in node",i,"RX")
@@ -949,7 +986,7 @@ class node():
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
                     if ((self.packet[i].collided == 0) and (self.packet[i].processed == 1)):
-                        if (nodes[i].mode == "RX"):
+                        if (nodes[i].canReceivePacket()):
                             if(debug):
                                 print(f"called nodes[{i}].receive() from node {self.id}")
                             env.process(nodes[i].receive(env, self.packet[i], self.packet[i].seqNr, self.distanceValue, self.nextRp, self.id))
@@ -957,6 +994,15 @@ class node():
                         else:
                             if(debug):
                                 print(f"nodes[{i}] is in {nodes[i].mode} mode, cannot receive packet from node {self.id}")
+                                if self.packet[i].packetType in ("WOR_up", "WOR_down"):
+                                    print(
+                                        f"[WOR_REJECT] T={env.now:.2f} TX={self.id} RX={i} "
+                                        f"seqNr={self.packet[i].seqNr} "
+                                        f"mode={nodes[i].mode} cadProcessActive={nodes[i].cadProcessActive} "
+                                        f"lastCadScanTime={nodes[i].lastCadScanTime:.2f} "
+                                        f"cadExitTime={nodes[i].cadExitTime} "
+                                        f"cadExitReason={nodes[i].cadExitReason}"
+                                    )
                     else:
                         # XXX only for debugging
                         collidedPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
@@ -1046,6 +1092,8 @@ class node():
                         # print("Latency:",latency)
                         packetLatencies.append(latency)  
                         lastTimePacketRecBS = env.now        
+                        if(debug):
+                            print(f"[GW_RX_TIME] T={env.now:.2f} GW={self.id} lastTimePacketRecBS={lastTimePacketRecBS:.2f}")
             
             else:
                 #Do no more transmissions. Account the packets received.
@@ -1059,6 +1107,8 @@ class node():
                     # print("Latency:",latency)
                     packetLatencies.append(latency)
                     lastTimePacketRecBS = env.now 
+                    if(debug):
+                        print(f"[GW_RX_TIME] T={env.now:.2f} GW={self.id} lastTimePacketRecBS={lastTimePacketRecBS:.2f}")
             
             #overall receiving rate calculation when 50% of the packets are received 
             global totalSimPackets
@@ -1369,6 +1419,15 @@ class node():
 
         if(repeater_sleep_algo==0):
             return 0
+
+        self.cadProcessActive = True
+        self.cadExitTime = None
+        self.cadExitReason = None
+        if(debug):
+            print(
+                f"[CAD_PROCESS_START] T={env.now:.2f} Node={self.id} "
+                f"type={self.type} avgSendTime={avgSendTime}"
+            )
         
         if(self.type.lower() == "gw"):
             self.mode = "RX"
@@ -1387,7 +1446,14 @@ class node():
                 self.lastCadScanTime = env.now
 
                 for node in self.packetSourcesAtRx:
-                    if node.tx_activity["in_preamble"](env) and (node.tx_activity["tx_packet_type"] == "WOR_up" or node.tx_activity["tx_packet_type"] == "WOR_down"):
+                    is_wor = node.tx_activity["tx_packet_type"] in ("WOR_up", "WOR_down")
+                    in_preamble = node.tx_activity["in_preamble"](env)
+                    if(debug and is_wor):
+                        print(
+                            f"[CAD_SCAN_WOR] T={env.now:.2f} RX={self.id} TX={node.id} "
+                            f"inPreamble={in_preamble} mode={self.mode}"
+                        )
+                    if in_preamble and is_wor:
                         self.mode = "RX"
                         self.batteryUpdate(env, self.currentRx)
                         self.setIconColorByMode(env, get_linenumber())
@@ -1428,7 +1494,23 @@ class node():
                 yield env.timeout(self.cadPeriodity*(1+self.clockAccuracy))
           
             #Exit CAD function after the end of the simulation
-            if((lastPacketGenTime!= 0 and env.now > (lastPacketGenTime + 3600000)) or (lastTimePacketRecBS < (env.now-avgSendTime*2))):
+            generation_timeout = (
+                lastPacketGenTime != 0
+                and env.now > (lastPacketGenTime + 3600000)
+            )
+            if generation_timeout:
+                exit_reason = "generation_timeout"
+                self.cadProcessActive = False
+                self.cadExitTime = env.now
+                self.cadExitReason = exit_reason
+                if(debug):
+                    print(
+                        f"[CAD_PROCESS_EXIT] T={env.now:.2f} Node={self.id} reason={exit_reason} "
+                        f"lastPacketGenTime={lastPacketGenTime:.2f} "
+                        f"lastTimePacketRecBS={lastTimePacketRecBS:.2f} "
+                        f"gatewaySilence={env.now-lastTimePacketRecBS:.2f} "
+                        f"(informationalOnly) mode={self.mode}"
+                    )
                 break
 
     
@@ -1593,11 +1675,15 @@ class node():
         if(lastPacketGenTime != 0 and self.txTimePercentage == 0 and lastPacketGenTime < env.now):
             self.txTimePercentage = (len(self.txPackets)*self.packet[0].rectime)/lastPacketGenTime
         
-        for i in range(0, len(nodes)): #add the transmitting node itself too at its own rx
+        for i in range(0, len(nodes)): #add the transmission at each applicable receiver
             self.packet[i].addTime = round(env.now, 1)
             self.packet[i].seqNr = seqNr
             self.packet[i].txBattery = self.batteryPercentage
 
+            # A dedicated receive antenna is isolated from this node's own
+            # transmission, so do not model the outgoing signal as an RX source.
+            if(i == self.id and self.antennaType.lower() == "dual"):
+                continue
             if(self.packet[i].lost == 0): #checking if the packet reachs at node[i]
                 if (self in nodes[i].packetSourcesAtRx):
                     print("ERROR: Packet",self.packet[i].seqNr, "from node",self.id,"is already in node",i,"RX")
@@ -1660,7 +1746,7 @@ class node():
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
                     if (self.packet[i].collided == 0):
-                        if (nodes[i].mode == "RX"):
+                        if (nodes[i].canReceivePacket()):
                             if(debug):
                                 print(f"called nodes[{i}].receive() from node {self.id}")
                             env.process(nodes[i].receive(env, self.packet[i], self.packet[i].seqNr, self.distanceValue, self.nextRp, self.id))
