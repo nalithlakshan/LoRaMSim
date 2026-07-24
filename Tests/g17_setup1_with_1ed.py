@@ -45,7 +45,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
     sim.graphics = 1
-    sim.realtime_graphics = 1
+    sim.realtime_graphics = 0
     sim.debug = 0
 
     sim.positional_algo = True
@@ -61,17 +61,17 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     # Infrastructure nodes must be created before EDs for position learning.
     d = maxDist*0.99
 
-    gw1 = node(env, 2.90*d, 1.40*d, "gw")             # graph ID 1
-    rp3 = node(env, 2.00*d, 1.40*d, "rp")             # graph ID 3
-    rp4 = node(env, 1.00*d, 1.40*d, "rp")             # graph ID 4
+    gw1 = node(env, 2.90*d, 1.80*d, "gw")             # graph ID 1
+    rp3 = node(env, 2.00*d, 1.50*d, "rp")             # graph ID 3
+    rp4 = node(env, 1.00*d, 1.50*d, "rp")             # graph ID 4
     rp5 = node(env, 1.00*d, 1.00*d, "rp")             # graph ID 5
     rp6 = node(env, 2.00*d, 1.00*d, "rp")             # graph ID 6
-    rp7 = node(env, 3.00*d, 1.00*d, "rp")             # graph ID 7
+    rp7 = node(env, 2.90*d, 0.70*d, "rp")             # graph ID 7
     repeaters.extend([rp3, rp4, rp5, rp6, rp7])
 
     no_of_repeaters = len(repeaters)
 
-    ed22 = node(env, 0.90*d, 1.50*d, "ed")             # graph ID 22, near RP 4
+    ed22 = node(env, 0.90*d, 1.60*d, "ed")             # graph ID 22, near RP 4
     enddevices.append(ed22)
 
 
@@ -90,8 +90,16 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     }
 
     if sim.graphics == 1:
+        device_type_prefix = {
+            "gw": "G",
+            "rp": "R",
+            "ed": "E",
+        }
         for topology_id, topology_node in topology_nodes.items():
-            topology_node.label.set_text(topology_id)
+            prefix = device_type_prefix[topology_node.type.lower()]
+            topology_node.label.set_text(
+                f"{topology_node.id} ({prefix}{topology_id})"
+            )
     
 
     sim.networkConfig()
@@ -258,7 +266,7 @@ if __name__ == "__main__":
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
     parser.add_argument("-avg_send_time"             , default=3600000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=3 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-total_sim_packets"         , default=100 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()

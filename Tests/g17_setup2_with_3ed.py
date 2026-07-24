@@ -67,7 +67,12 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     rp5 = node(env, 1.00*d, 1.00*d, "rp")             # graph ID 5
     rp6 = node(env, 2.00*d, 1.00*d, "rp")             # graph ID 6
     rp7 = node(env, 2.90*d, 0.70*d, "rp")             # graph ID 7
-    repeaters.extend([rp3, rp4, rp5, rp6, rp7])
+    rp8 = node(env, 2.50*d, 1.80*d, "rp")             # graph ID 8
+    rp10 = node(env, 2.50*d, 0.70*d, "rp")            # graph ID 10
+    rp9 = node(env, 1.50*d, 1.80*d, "rp")             # graph ID 9
+    rp2 = node(env, 1.50*d, 0.70*d, "rp")             # graph ID 2
+    repeaters.extend([rp3, rp4, rp5, rp6, rp7, rp8, rp10, rp9, rp2])
+    repeater_topology_ids = [3, 4, 5, 6, 7, 8, 10, 9, 2]
 
     no_of_repeaters = len(repeaters)
 
@@ -88,6 +93,10 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         5: rp5,
         6: rp6,
         7: rp7,
+        8: rp8,
+        10: rp10,
+        9: rp9,
+        2: rp2,
     }
     topology_id_by_sim_id = {
         topology_node.id: topology_id
@@ -114,7 +123,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         print(topology_id, "->", topology_nodes[topology_id].id)
 
     print("\nPosition-learning results")
-    for topology_id in [1, 3, 4, 5, 6, 7]:
+    for topology_id in [1] + sorted(repeater_topology_ids):
         topology_node = topology_nodes[topology_id]
         next_rp = topology_id_by_sim_id.get(topology_node.nextRp, topology_node.nextRp)
         nearest_gw = topology_id_by_sim_id.get(
@@ -175,34 +184,59 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         print("Minimum Latency: N/A")
         print("Maximum Latency: N/A")
 
-    print("\n Received/Repeated Packets by Each Repeater")
+    print("\nReceived/Repeated Packets by Each Repeater")
     total_ed_tx_successes = 0
     total_ed_tx_losses = 0
     total_power_consumption = 0
-    # ED 22 is near RP 4, ED 23 is near RP 3, and ED 24 is near RP 6.
+    generated_data_packets = set()
+    initial_data_losses_by_corresponding_rp = set()
+
+    # ED 22 is near RP 4, ED 23 is near RP 3, and ED 24 is near RP 7.
     ed_repeater_pairs = [
         (22, ed22, rp4),
         (23, ed23, rp3),
-        (24, ed24, rp6),
+        (24, ed24, rp7),
     ]
     for topology_id, ed, corresponding_rp in ed_repeater_pairs:
-        ed_tx_pkts = len(ed.txPackets)
-        ed_tx_successes = len([
+        ed_wor_packets = [
             packet for packet in ed.txPackets
+            if packet.endswith("|WOR_up")
+        ]
+        ed_data_packets = [
+            packet for packet in ed.txPackets
+            if packet.endswith("|DATA_up")
+        ]
+        generated_data_packets.update(ed_data_packets)
+
+        ed_wor_successes = len([
+            packet for packet in ed_wor_packets
             if packet in corresponding_rp.recPackets
         ])
-        ed_tx_losses = ed_tx_pkts - ed_tx_successes
-        total_ed_tx_successes += ed_tx_successes
-        total_ed_tx_losses += ed_tx_losses
-        if ed_tx_pkts > 0:
-            if ed_tx_pkts < 5:
-                print("ED", topology_id, "Sent Pkts:", ed.txPackets)
-            print("ED", topology_id, "Sent Pkts:", ed_tx_pkts)
-            print("ED", topology_id, "Pkts successfully sent to corresponding repeater:", ed_tx_successes)
-            print("ED", topology_id, "Pkts failed to be captured by corresponding repeater:", ed_tx_losses)
-            print("ED", topology_id, "percentage of initial Pkt transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%")
+        ed_data_successes = len([
+            packet for packet in ed_data_packets
+            if packet in corresponding_rp.recPackets
+        ])
+        ed_wor_losses = len(ed_wor_packets) - ed_wor_successes
+        ed_data_losses = len(ed_data_packets) - ed_data_successes
+        initial_data_losses_by_corresponding_rp.update(
+            packet for packet in ed_data_packets
+            if packet not in corresponding_rp.recPackets
+        )
+        total_ed_tx_successes += ed_data_successes
+        total_ed_tx_losses += ed_data_losses
 
-    for topology_id, rp in zip([3, 4, 5, 6, 7], repeaters):
+        print("ED", topology_id, "WOR sent/received/lost:",
+              len(ed_wor_packets), ed_wor_successes, ed_wor_losses)
+        print("ED", topology_id, "DATA sent/received/lost:",
+              len(ed_data_packets), ed_data_successes, ed_data_losses)
+        if ed_data_packets:
+            print(
+                "ED", topology_id,
+                "percentage of initial DATA transmission failures:",
+                round(ed_data_losses/len(ed_data_packets)*100, 3), "%"
+            )
+
+    for topology_id, rp in zip(repeater_topology_ids, repeaters):
         total_power_consumption += rp.batteryCapacity - rp.batteryRemaining
         if(len(rp.recPackets) <20):
             print("RP", topology_id, "Received Pkts:", rp.recPackets)
@@ -214,13 +248,125 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     
     print("********************************************")
     print("Total Generated Packets:", total_sim_packets)
-    # total_lost_pkts = total_sim_packets - len(set(gw1.recPackets+gw2.recPackets))
-    total_lost_pkts = total_sim_packets - len(sim.packetsRecBS)
+    gateway_data_packets = set(sim.packetsRecBS)
+    missing_gateway_packets = sorted(generated_data_packets - gateway_data_packets)
+    total_lost_pkts = len(missing_gateway_packets)
 
-    total_intermediate_losses = total_lost_pkts-total_ed_tx_losses
+    initial_loss_packets = []
+    intermediate_loss_packets = []
+    for seq_nr in missing_gateway_packets:
+        diagnostic = sim.dataPacketDiagnostics.get(seq_nr, {})
+        source_id = diagnostic.get("source", int(seq_nr.split("|")[0]))
+        source_transmissions = [
+            transmission
+            for transmission in diagnostic.get("transmissions", [])
+            if transmission["sender"] == source_id
+        ]
+        first_hop_received = any(
+            receiver["outcome"] == "scheduled_receive"
+            for transmission in source_transmissions
+            for receiver in transmission["receivers"]
+            if receiver["receiverType"].lower() in ("rp", "gw")
+        )
+        if first_hop_received:
+            intermediate_loss_packets.append(seq_nr)
+        else:
+            initial_loss_packets.append(seq_nr)
+
+    total_intermediate_losses = len(intermediate_loss_packets)
     print("Total Lost Packets:", total_lost_pkts)
-    print("---> Lost at initial ED transmission:", total_ed_tx_losses)
+    print("---> Lost at initial ED DATA transmission:", len(initial_loss_packets))
     print("---> Lost at intermediate repetition:", total_intermediate_losses, "\n")
+
+    if missing_gateway_packets:
+        print("Missing DATA packet path diagnostics")
+        for seq_nr in missing_gateway_packets:
+            diagnostic = sim.dataPacketDiagnostics.get(seq_nr, {})
+            source_id = diagnostic.get("source", int(seq_nr.split("|")[0]))
+            source_label = topology_id_by_sim_id.get(source_id, source_id)
+            loss_stage = (
+                "initial ED transmission"
+                if seq_nr in initial_loss_packets
+                else "intermediate repetition"
+            )
+            print(
+                f"\n{seq_nr}: source={source_id} (E{source_label}), "
+                f"stage={loss_stage}, "
+                f"intendedFirstHop={diagnostic.get('intendedFirstHop')}"
+            )
+            logical_packet_id = "|".join(seq_nr.split("|")[:2])
+            wor_diagnostic = sim.worPacketDiagnostics.get(
+                logical_packet_id, {}
+            )
+            for transmission in wor_diagnostic.get("transmissions", []):
+                for receiver in transmission["receivers"]:
+                    if receiver["outcome"] == "out_of_range":
+                        continue
+                    receiver_id = receiver["receiver"]
+                    receiver_label = topology_id_by_sim_id.get(
+                        receiver_id, receiver_id
+                    )
+                    print(
+                        f"  Initial WOR to node "
+                        f"{receiver_id}({receiver_label}): "
+                        f"{receiver['outcome']}"
+                        f"[startMode={receiver['startMode']},"
+                        f"endMode={receiver['endMode']},"
+                        f"cadActive={receiver['cadProcessActive']},"
+                        f"scanDuringPreamble="
+                        f"{receiver['scanOccurredDuringPreamble']},"
+                        f"lastScan={receiver['lastCadScanTimeAtEnd']:.2f},"
+                        f"preambleEnd={transmission['preambleEnd']:.2f}]"
+                    )
+            for transmission in diagnostic.get("transmissions", []):
+                sender_id = transmission["sender"]
+                sender_label = topology_id_by_sim_id.get(sender_id, sender_id)
+                visible_results = [
+                    receiver
+                    for receiver in transmission["receivers"]
+                    if receiver["outcome"] != "out_of_range"
+                ]
+                formatted_results = []
+                for receiver in visible_results:
+                    receiver_id = receiver["receiver"]
+                    receiver_label = topology_id_by_sim_id.get(
+                        receiver_id, receiver_id
+                    )
+                    formatted_results.append(
+                        f"{receiver_id}({receiver_label}):"
+                        f"{receiver['outcome']}"
+                        f"[mode={receiver['mode']},"
+                        f"cadActive={receiver['cadProcessActive']},"
+                        f"collided={receiver['collided']},"
+                        f"processed={receiver['processed']}]"
+                    )
+                print(
+                    f"  TX node {sender_id}({sender_label}) at "
+                    f"{transmission['start']:.2f}: "
+                    + (", ".join(formatted_results) or "no in-range infrastructure")
+                )
+            for receive_event in diagnostic.get("receiveEvents", []):
+                receiver_id = receive_event["receiver"]
+                receiver_label = topology_id_by_sim_id.get(
+                    receiver_id, receiver_id
+                )
+                packet_next_rp = receive_event.get("packetNextRp")
+                packet_next_label = topology_id_by_sim_id.get(
+                    packet_next_rp, packet_next_rp
+                )
+                receiver_next_rp = receive_event.get("receiverNextRp")
+                receiver_next_label = topology_id_by_sim_id.get(
+                    receiver_next_rp, receiver_next_rp
+                )
+                print(
+                    f"  RX decision at node {receiver_id}({receiver_label}) at "
+                    f"{receive_event['time']:.2f}: "
+                    f"{receive_event.get('decision')}; "
+                    f"WOR ACK={receive_event.get('worAckReceived')}, "
+                    f"packet next RP={packet_next_rp}({packet_next_label}), "
+                    f"receiver next RP={receiver_next_rp}({receiver_next_label}), "
+                    f"standby packets={receive_event.get('standbyBufferCount')}"
+                )
 
     print("\nTotal Standy \t:",sim.total_stanby)
     print("---> Standby Retains \t\t:",sim.standby_retains)
@@ -241,7 +387,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     # print("Node",pkt2_tx,"to Node",pkt2_rx,"RSSI:", nodes[pkt2_tx].packet[pkt2_rx].rssi)
 
     # Append Test to Excel Sheet
-    file_path = "g17_setup1_with_3ed_sim_outputs.xlsx"
+    file_path = "g17_setup2_with_3ed_sim_outputs.xlsx"
     sheet_name = "Sheet1"
     values_to_append = []
     values_to_append.append(sim.experiment)
