@@ -44,7 +44,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
     sim.avgSendTime = avg_send_time
     sim.repeatDelayMultiplier = repeater_delay_multiplier
-    sim.graphics = 1
+    sim.graphics = 0
     sim.realtime_graphics = 0
     sim.debug = 0
 
@@ -62,27 +62,27 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     d = maxDist*0.99
 
     gw1 = node(env, 2.90*d, 1.80*d, "gw")             # graph ID 1
-    rp3 = node(env, 2.00*d, 1.50*d, "rp")             # graph ID 3
-    rp4 = node(env, 1.00*d, 1.50*d, "rp")             # graph ID 4
-    rp5 = node(env, 1.00*d, 1.00*d, "rp")             # graph ID 5
-    rp6 = node(env, 2.00*d, 1.00*d, "rp")             # graph ID 6
-    rp7 = node(env, 2.90*d, 0.70*d, "rp")             # graph ID 7
+    rp3 = node(env, 2.00*d, 1.50*d, "rp")             # graph ID 2
+    rp4 = node(env, 1.00*d, 1.50*d, "rp")             # graph ID 3
+    rp5 = node(env, 1.00*d, 1.00*d, "rp")             # graph ID 4
+    rp6 = node(env, 2.00*d, 1.00*d, "rp")             # graph ID 5
+    rp7 = node(env, 2.90*d, 0.70*d, "rp")             # graph ID 6
     repeaters.extend([rp3, rp4, rp5, rp6, rp7])
 
     no_of_repeaters = len(repeaters)
 
-    ed22 = node(env, 0.90*d, 1.60*d, "ed")             # graph ID 22, near RP 4
+    ed22 = node(env, 0.90*d, 1.60*d, "ed")             # graph ID 22, near RP 3
     enddevices.append(ed22)
 
 
     topology_nodes = {
         1: gw1,
         22: ed22,
-        3: rp3,
-        4: rp4,
-        5: rp5,
-        6: rp6,
-        7: rp7,
+        2: rp3,
+        3: rp4,
+        4: rp5,
+        5: rp6,
+        6: rp7,
     }
     topology_id_by_sim_id = {
         topology_node.id: topology_id
@@ -109,7 +109,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         print(topology_id, "->", topology_nodes[topology_id].id)
 
     print("\nPosition-learning results")
-    for topology_id in [1, 3, 4, 5, 6, 7]:
+    for topology_id in [1, 2, 3, 4, 5, 6]:
         topology_node = topology_nodes[topology_id]
         next_rp = topology_id_by_sim_id.get(topology_node.nextRp, topology_node.nextRp)
         nearest_gw = topology_id_by_sim_id.get(
@@ -174,7 +174,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     total_ed_tx_successes = 0
     total_ed_tx_losses = 0
     total_power_consumption = 0
-    # This topology has one ED and it is near repeater 4.
+    # This topology has one ED and it is near repeater 3.
     ed_tx_pkts = len(ed22.txPackets)
     ed_tx_successes = len([x for x in ed22.txPackets if x in rp4.recPackets])
     ed_tx_losses = ed_tx_pkts - ed_tx_successes
@@ -188,7 +188,7 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
         print("ED", 22, "Pkts failed to be captured by corresponding repeater:", ed_tx_losses)
         print("ED", 22, "percentage of initial Pkt transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%")
 
-    for topology_id, rp in zip([3, 4, 5, 6, 7], repeaters):
+    for topology_id, rp in zip([2, 3, 4, 5, 6], repeaters):
         total_power_consumption += rp.batteryCapacity - rp.batteryRemaining
         if(len(rp.recPackets) <20):
             print("RP", topology_id, "Received Pkts:", rp.recPackets)
@@ -266,7 +266,7 @@ if __name__ == "__main__":
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
     parser.add_argument("-avg_send_time"             , default=3600000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=100 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()

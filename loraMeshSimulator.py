@@ -45,6 +45,8 @@ repeater_role_changes = 0
 # Averaege packet sending interval of end devices
 avgSendTime = 600000 #in ms 
 repeatDelayMultiplier = 5 #mean repeater waiting period = airtime * repeatDelayMultiplier 
+worPreambleDuration = 1030 #ms; margin above the 1000 ms CAD period
+repeaterRxIdleTimeout = 20000 #ms; ACK wait + standby/forwarding time + margin
 
 experiment = 1
 
@@ -106,6 +108,8 @@ lostPackets = []
 #global packet seq numbers received at gateways
 packetsRecBS = []
 lastTimePacketRecBS = 0
+dataPacketDiagnostics = {}
+worPacketDiagnostics = {}
 Q1_time = 0
 Q2_time = 0
 Q3_time = 0
@@ -277,8 +281,8 @@ def airtime(sf,cr,pl,bw, premlen=8):
         H = 1
 
     Tsym = (2.0**sf)/bw
-    if(premlen == -1): #A preamble equal to CAD Periodicity
-        Tpream = 1000 #ms
+    if(premlen == -1): #Default WOR preamble with CAD/clock-drift margin
+        Tpream = worPreambleDuration
     else: 
         Tpream = (premlen + 4.25)*Tsym
     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0)
@@ -496,6 +500,8 @@ class node():
         self.nTransmitters = simpy.Resource(env, capacity=1)
         self.tx_activity["active"] = False
         self.standbyBufferCount = 0
+        self.activeReceiveProcesses = 0
+        self.rxIdleDeadline = 0
         self.lowerDistanceRecBuffer = []
         self.txTimePercentage = 0
         self.nearestGwId = -1
@@ -558,6 +564,9 @@ class node():
         global graphics
         global state_data_logging
 
+        # State timing is simulation logic and must not depend on plot rendering.
+        self.lastStateChangeTime = env.now
+
         if(state_data_logging):
             # Record state change in state diagram file
             if self.mode == "TX":
@@ -587,7 +596,6 @@ class node():
             if(color != self.icon.get_facecolor()):
                 if(debug):
                     print(f"Node {self.id} changing color to {color} at line {lineNo}")
-            self.lastStateChangeTime = env.now
             self.icon.set_color(color)
 
 
@@ -629,6 +637,27 @@ class node():
             self.antennaType.lower() == "dual" and self.tx_activity["active"]
         )
 
+    def extendRxIdleDeadline(self, env):
+        """Keep a repeater awake long enough for the current protocol exchange."""
+        global repeaterRxIdleTimeout
+        if self.type.lower() == "rp":
+            self.rxIdleDeadline = max(
+                self.rxIdleDeadline,
+                env.now + repeaterRxIdleTimeout,
+            )
+
+    def repeaterHasPendingWork(self):
+        """Return whether sleeping could interrupt an active receive/forward flow."""
+        return (
+            self.activeReceiveProcesses > 0
+            or len(self.packetSourcesAtRx) > 0
+            or self.standbyBufferCount > 0
+            or len(self.packetsFifo.items) > 0
+            or self.nTransmitters.count > 0
+            or len(self.nTransmitters.queue) > 0
+            or self.awaitingToSendWorAck != 0
+        )
+
 
     def createPackets(self, packetType = "OTHER", premlen=8, intendedRxId=-1, nodeAcknowledged=-1, seqNr=None, addTime=None):
         global experiment
@@ -640,8 +669,8 @@ class node():
 
         # determining distances to RX nodes
         for i in range(0,len(nodes)):
-            # d = np.sqrt((self.x-nodes[i].x)*(self.x-nodes[i].x)+(self.x-nodes[i].x)*(self.y-nodes[i].y))
-            d = abs(self.x-nodes[i].x) + abs((self.y-nodes[i].y))
+            d = np.sqrt((self.x-nodes[i].x)*(self.x-nodes[i].x)+(self.y-nodes[i].y)*(self.y-nodes[i].y))
+            # d = abs(self.x-nodes[i].x) + abs((self.y-nodes[i].y))
             self.dist.append(d)
 
             if(d<= maxDist and self.type != "ed" and nodes[i].type != "ed" and i != self.id):
@@ -811,6 +840,11 @@ class node():
                     )
                 break
 
+            # Other EDs can increment the global counter while this ED waits
+            # for its WOR acknowledgement. Keep this packet's assigned number
+            # stable for the complete WOR/DATA exchange.
+            currentPacketSeq = packetSeq
+
             self.mode = "RX"
             self.batteryUpdate(env, self.currentRx)
             self.setIconColorByMode(env, get_linenumber())
@@ -833,7 +867,7 @@ class node():
                 if(self.worAckReceived == -1):
                     #first send WORed then data packet
                     self.nextRp = -1 #broadcast WOR
-                    seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|WOR_up"
+                    seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|WOR_up"
                     addTime = round(env.now, 1)
                     self.tx_activity["active"] = True
                     self.createPackets(packetType="WOR_up", premlen=-1, seqNr=seqNr, addTime=addTime)
@@ -866,7 +900,7 @@ class node():
                                 #     print("ED: waiting till medium is idle")
 
                         self.worAckReceived = -1
-                        seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|DATA_up"
+                        seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
                         addTime = round(env.now, 1)
                         self.tx_activity["active"] = True
                         self.createPackets(packetType="DATA_up", intendedRxId=self.nextRp, seqNr=seqNr, addTime=addTime)
@@ -879,7 +913,7 @@ class node():
                         yield env.process(self.transmit(env))
 
             else:
-                seqNr = f"{self.id}|{packetSeq}|{round(env.now, 1)}|DATA_up"
+                seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
                 addTime = round(env.now, 1)
                 self.tx_activity["active"] = True
                 self.createPackets(packetType="DATA_up", seqNr=seqNr, addTime=addTime)
@@ -912,6 +946,49 @@ class node():
             # print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.id}|{packetSeq}|{self.tx_activity['tx_packet_type']}")
             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Transmitted Packet:{self.packet[0].seqNr}")
 
+        data_diag_event = None
+        if self.packet[0].packetType == "DATA_up":
+            data_diag = dataPacketDiagnostics.setdefault(
+                self.packet[0].seqNr,
+                {
+                    "source": self.id,
+                    "intendedFirstHop": self.packet[0].intendedRxNodeId,
+                    "gatewayReceived": False,
+                    "gatewayId": None,
+                    "transmissions": [],
+                },
+            )
+            data_diag_event = {
+                "sender": self.id,
+                "senderType": self.type,
+                "start": env.now,
+                "receivers": [],
+            }
+            data_diag["transmissions"].append(data_diag_event)
+
+        wor_diag_event = None
+        wor_diag_receivers = {}
+        if (
+            self.type.lower() == "ed"
+            and self.packet[0].packetType in ("WOR_up", "WOR_down")
+        ):
+            logical_packet_id = "|".join(self.packet[0].seqNr.split("|")[:2])
+            wor_diag = worPacketDiagnostics.setdefault(
+                logical_packet_id,
+                {
+                    "source": self.id,
+                    "transmissions": [],
+                },
+            )
+            wor_diag_event = {
+                "sender": self.id,
+                "start": env.now,
+                "preambleEnd": env.now + self.packet[0].Tprem,
+                "airtimeEnd": env.now + self.packet[0].rectime,
+                "receivers": [],
+            }
+            wor_diag["transmissions"].append(wor_diag_event)
+
         for i in range(0, len(nodes)):
             self.packet[i].addTime = round(env.now, 1)
             if(seqNr != None):
@@ -920,6 +997,17 @@ class node():
             # transmission, so do not model the outgoing signal as an RX source.
             if(i == self.id and self.antennaType.lower() == "dual"):
                 continue
+            if wor_diag_event is not None and nodes[i].type.lower() != "ed":
+                receiver_diag = {
+                    "receiver": i,
+                    "receiverType": nodes[i].type,
+                    "distance": self.dist[i],
+                    "startMode": nodes[i].mode,
+                    "cadProcessActive": nodes[i].cadProcessActive,
+                    "lastCadScanTimeAtStart": nodes[i].lastCadScanTime,
+                }
+                wor_diag_event["receivers"].append(receiver_diag)
+                wor_diag_receivers[i] = receiver_diag
             if(
                 debug
                 and self.packet[i].packetType in ("WOR_up", "WOR_down")
@@ -973,6 +1061,7 @@ class node():
         self.mode = "RX"
         self.batteryUpdate(env, self.currentRx)
         self.setIconColorByMode(env, get_linenumber())
+        self.extendRxIdleDeadline(env)
 
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
@@ -982,6 +1071,50 @@ class node():
         nodesThatReceivedPkt = []
         for i in range(0, len(nodes)):
             if(i != self.id):
+                if i in wor_diag_receivers:
+                    receiver_diag = wor_diag_receivers[i]
+                    last_scan = nodes[i].lastCadScanTime
+                    receiver_diag["endMode"] = nodes[i].mode
+                    receiver_diag["lastCadScanTimeAtEnd"] = last_scan
+                    receiver_diag["scanOccurredDuringPreamble"] = (
+                        wor_diag_event["start"]
+                        <= last_scan
+                        < wor_diag_event["preambleEnd"]
+                    )
+                    if self.packet[i].lost:
+                        outcome = "out_of_range"
+                    elif self.packet[i].collided != 0:
+                        outcome = "collision"
+                    elif self.packet[i].processed != 1:
+                        outcome = "not_processed"
+                    elif nodes[i].canReceivePacket():
+                        outcome = "scheduled_receive"
+                    else:
+                        outcome = "receiver_unavailable"
+                    receiver_diag["outcome"] = outcome
+                if data_diag_event is not None and nodes[i].type.lower() != "ed":
+                    if self.packet[i].lost:
+                        outcome = "out_of_range"
+                    elif self.packet[i].collided != 0:
+                        outcome = "collision"
+                    elif self.packet[i].processed != 1:
+                        outcome = "not_processed"
+                    elif nodes[i].canReceivePacket():
+                        outcome = "scheduled_receive"
+                    else:
+                        outcome = "receiver_unavailable"
+                    data_diag_event["receivers"].append(
+                        {
+                            "receiver": i,
+                            "receiverType": nodes[i].type,
+                            "outcome": outcome,
+                            "mode": nodes[i].mode,
+                            "cadProcessActive": nodes[i].cadProcessActive,
+                            "collided": self.packet[i].collided,
+                            "processed": self.packet[i].processed,
+                            "distance": self.dist[i],
+                        }
+                    )
                 if self.packet[i].lost:
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
@@ -1022,9 +1155,59 @@ class node():
 
 
     def receive(self, env, packet, seqNr, prevDistanceValue, nextRp, prevRp):
+        """Track active receive handlers so an older flow cannot put an RP to sleep."""
+        is_repeater = self.type.lower() == "rp"
+        if is_repeater:
+            self.activeReceiveProcesses += 1
+            self.extendRxIdleDeadline(env)
+        try:
+            result = yield env.process(
+                self._receive(
+                    env,
+                    packet,
+                    seqNr,
+                    prevDistanceValue,
+                    nextRp,
+                    prevRp,
+                )
+            )
+            return result
+        finally:
+            if is_repeater:
+                self.activeReceiveProcesses -= 1
+                self.extendRxIdleDeadline(env)
+
+
+    def _receive(self, env, packet, seqNr, prevDistanceValue, nextRp, prevRp):
         global nodes
         global lastTimePacketRecBS
         # yield env.timeout(repeaterProcessingTime) #wait for the processing time
+
+        data_receive_event = None
+        if packet.packetType == "DATA_up" and self.type.lower() == "rp":
+            data_diag = dataPacketDiagnostics.setdefault(
+                seqNr,
+                {
+                    "source": packet.nodeid,
+                    "intendedFirstHop": -1,
+                    "gatewayReceived": False,
+                    "gatewayId": None,
+                    "transmissions": [],
+                },
+            )
+            data_receive_event = {
+                "receiver": self.id,
+                "time": env.now,
+                "prevRp": prevRp,
+                "packetNextRp": nextRp,
+                "receiverNextRp": self.nextRp,
+                "mode": self.mode,
+                "worAckReceived": self.worAckReceived,
+                "awaitingToSendWorAck": self.awaitingToSendWorAck,
+                "standbyBufferCount": self.standbyBufferCount,
+                "decision": "entered_receive",
+            }
+            data_diag.setdefault("receiveEvents", []).append(data_receive_event)
 
         if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
             self.cadScanSyncProcess(env, packet, seqNr, prevRp)
@@ -1087,6 +1270,12 @@ class node():
                         # print("T =",env.now, "|GW",self.id, "Received Packet:",seqNr,"\n")
                     if seqNr not in packetsRecBS:
                         packetsRecBS.append(seqNr)
+                        data_diag = dataPacketDiagnostics.setdefault(
+                            seqNr,
+                            {"source": packet.nodeid, "intendedFirstHop": -1, "transmissions": []},
+                        )
+                        data_diag["gatewayReceived"] = True
+                        data_diag["gatewayId"] = self.id
                         x,y,t,pktType =seqNr.split("|")
                         latency = env.now -float(t)
                         # print("Latency:",latency)
@@ -1102,6 +1291,12 @@ class node():
                     # print("T =",env.now, "|GW",self.id, "Received Packet:",seqNr,"\n")
                 if seqNr not in packetsRecBS:
                     packetsRecBS.append(seqNr)
+                    data_diag = dataPacketDiagnostics.setdefault(
+                        seqNr,
+                        {"source": packet.nodeid, "intendedFirstHop": -1, "transmissions": []},
+                    )
+                    data_diag["gatewayReceived"] = True
+                    data_diag["gatewayId"] = self.id
                     x,y,t,pktType =seqNr.split("|")
                     latency = env.now -float(t)
                     # print("Latency:",latency)
@@ -1196,11 +1391,6 @@ class node():
                         standby = 0
 
                         if(nodes[prevRp].type.lower()!="ed" and self.nearestGwId!=nodes[prevRp].nearestGwId):
-                            if(self.worAckReceived!=0 and self.awaitingToSendWorAck==0 and len(self.packetsFifo.items)==0 and self.standbyBufferCount==0):
-                                self.mode = "CAD"
-                                self.batteryUpdate(env, self.currentCad)
-                                self.setIconColorByMode(env, get_linenumber())
-                                self.worAckReceived = -1
                             return 0
 
                         if(packet.packetType == "WOR_up" or packet.packetType == "DATA_up"):
@@ -1224,6 +1414,8 @@ class node():
                                                         print(f"Node {self.id}({self.type.upper()}) didn't receive a WOR-ACK for Pkt:{seqNr}")
                                                     break
                                         elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
+                                            if data_receive_event is not None:
+                                                data_receive_event["decision"] = "drop_not_expecting_data"
                                             if(debug):
                                                 print(f"Node {self.id}({self.type.upper()}) isn't expecting any Pkt but got:{seqNr}")
                                             return 0
@@ -1239,6 +1431,8 @@ class node():
                                         standby = yield env.process(self.standbyMode(env, packetInfo, standByTime, prevRp))
                                         self.standbyBufferCount -= 1
                                         if(standby == 1):
+                                            if data_receive_event is not None:
+                                                data_receive_event["decision"] = "standby_recovery_repeat"
                                             if(debug):
                                                 print(f"Standby Recovery by Node {self.id} at T={round(env.now,2)} (Standby Time={round(standByTime,2)})")
                                             self.packetsFifo.put(packetInfo)
@@ -1250,21 +1444,14 @@ class node():
                                                 else:
                                                     yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
                                         else:
-                                            #Whether goes back to RX mode or CAD
-                                            if((packet.packetType == "DATA_up" or packet.packetType == "DATA_down") and (len(self.packetsFifo.items) == 0) and self.awaitingToSendWorAck==0 and self.standbyBufferCount==0):
-                                                if(debug):
-                                                    print(f"-*-*-*-Node {self.id} standby period ends with Sb={standby} Pkt-type={packet.packetType} (seqNr:{seqNr})") 
-                                                self.mode = "CAD"
-                                                self.batteryUpdate(env, self.currentCad)
-                                                self.setIconColorByMode(env, get_linenumber())
-                                                self.worAckReceived = -1
+                                            if data_receive_event is not None:
+                                                data_receive_event["decision"] = "standby_retain"
+                                            if(debug):
+                                                print(f"-*-*-*-Node {self.id} standby period ends with Sb={standby} Pkt-type={packet.packetType} (seqNr:{seqNr})")
 
                                     elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="gw" and packet.packetType=="DATA_up" and (len(self.packetsFifo.items) == 0) and self.awaitingToSendWorAck==0 and self.standbyBufferCount==0):
-                                        self.mode = "CAD"
-                                        self.batteryUpdate(env, self.currentCad)
-                                        self.setIconColorByMode(env, get_linenumber())
-                                        self.worAckReceived = -1
-                                        # print(f"-*-*-*-Node {self.id} going to CAD mode as nextRp is GW (seqNr:{seqNr})")
+                                        if data_receive_event is not None:
+                                            data_receive_event["decision"] = "not_selected_next_hop_is_gateway"
 
                                     elif(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and nodes[prevRp].distanceValue>nodes[nextRp].distanceValue>self.distanceValue):
                                         if(energy_aware_algo):
@@ -1285,12 +1472,16 @@ class node():
                                                     break
 
                                         elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
+                                            if data_receive_event is not None:
+                                                data_receive_event["decision"] = "drop_addressed_but_not_expecting_data"
                                             return 0
                                         
                                         # elif(packet.packetType=="WOR_up" and self.worAckReceived==1):
                                         #     return 0
 
                                         self.packetsFifo.put(packetInfo)
+                                        if data_receive_event is not None:
+                                            data_receive_event["decision"] = "addressed_repeat"
                                         with self.nTransmitters.request() as req:
                                             yield req
                                             packetInfoOut = yield self.packetsFifo.get()
@@ -1300,16 +1491,15 @@ class node():
                                                 yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
                                 else:
                                     self.packetsFifo.put(packetInfo)
+                                    if data_receive_event is not None:
+                                        data_receive_event["decision"] = "repeat_without_standby"
                                     with self.nTransmitters.request() as req:
                                         yield req
                                         packetInfoOut = yield self.packetsFifo.get()
                                         yield env.process(self.repeat(env, packetInfoOut[0], packetInfoOut[1]))
                             
                             elif(self.distanceValue > prevDistanceValue and nodes[prevRp].type.lower()!="ed" and packet.packetType=="WOR_up" and len(self.packetsFifo.items)==0):
-                                self.mode = "CAD"
-                                self.batteryUpdate(env, self.currentCad)
-                                self.setIconColorByMode(env, get_linenumber())
-                                self.worAckReceived = -1
+                                return 0
 
                     else:
                         packetInfo = [seqNr, prevRp]
@@ -1457,17 +1647,28 @@ class node():
                         self.mode = "RX"
                         self.batteryUpdate(env, self.currentRx)
                         self.setIconColorByMode(env, get_linenumber())
+                        self.extendRxIdleDeadline(env)
                         if(debug):
                             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Detected WOR Packet from Node {node.id} during CAD")
 
-            #if stuck in RX mode and idling somehow, go back to CAD
-            if(self.type.lower()!="gw" and self.mode == "RX" and len(self.packetSourcesAtRx) == 0 and self.standbyBufferCount==0 and (self.lastStateChangeTime+6000) < env.now):
+            # Return to CAD only after the complete protocol-aware idle hold
+            # and only when no receive, standby, queue, TX, or ACK work remains.
+            if(
+                self.type.lower() == "rp"
+                and self.mode == "RX"
+                and env.now >= self.rxIdleDeadline
+                and not self.repeaterHasPendingWork()
+            ):
                 self.mode = "CAD"
                 self.batteryUpdate(env, self.currentCad)
                 self.setIconColorByMode(env, get_linenumber())
                 self.worAckReceived = -1
                 if(debug):
-                    print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Switching back to CAD mode after idling in RX")
+                    print(
+                        f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) "
+                        f"Switching back to CAD after idle deadline "
+                        f"{self.rxIdleDeadline:.2f}"
+                    )
 
             if(self.type.lower()!="gw"):
                 if(state_data_logging):    
@@ -1515,12 +1716,13 @@ class node():
 
     
     def timeTillNextWorTxBegin(self, env, premlen=-1):
+        global worPreambleDuration
         sf = 7
         bw = 500
         Tpream = 0
         Tsym = (2.0**sf)/bw
-        if(premlen == -1): #A preamble equal to CAD Periodicity
-            Tpream = 1000 #ms
+        if(premlen == -1):
+            Tpream = worPreambleDuration
         else: 
             Tpream = (premlen + 4.25)*Tsym
 
@@ -1559,12 +1761,13 @@ class node():
     def worPremlenCalc(self, env):
         global nodeClockAccuracy
         global wor_preamble_shrinking_algo
+        global worPreambleDuration
 
         if(wor_preamble_shrinking_algo==0):
-            return self.tPreamToPremlen(self.cadPeriodity) #default preamble length equal to CAD periodicity
+            return self.tPreamToPremlen(worPreambleDuration)
         
         if(self.worUpPacketHistory[0] == 0):
-            return self.tPreamToPremlen(self.cadPeriodity) #default preamble length, no sycnhronization yet
+            return self.tPreamToPremlen(worPreambleDuration)
         
         sf = 7
         bw = 500
@@ -1574,8 +1777,8 @@ class node():
         Tpream = 2*delta*(env.now - self.worUpPacketHistory[0])+ (50)*Tsym
         if(debug):
             print(f"Node {self.id}({self.type.upper()}) Tpream:{round(Tpream,2)} history:{self.worUpPacketHistory}")
-        if(Tpream >= self.cadPeriodity):
-            return self.tPreamToPremlen(self.cadPeriodity)
+        if(Tpream >= worPreambleDuration):
+            return self.tPreamToPremlen(worPreambleDuration)
         else:
             return self.tPreamToPremlen(Tpream)
         
@@ -1669,6 +1872,26 @@ class node():
 
         if(debug):
             print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Forwarded Packet:{seqNr}")
+
+        data_diag_event = None
+        if pktType == "DATA_up":
+            data_diag = dataPacketDiagnostics.setdefault(
+                seqNr,
+                {
+                    "source": int(x),
+                    "intendedFirstHop": -1,
+                    "gatewayReceived": False,
+                    "gatewayId": None,
+                    "transmissions": [],
+                },
+            )
+            data_diag_event = {
+                "sender": self.id,
+                "senderType": self.type,
+                "start": env.now,
+                "receivers": [],
+            }
+            data_diag["transmissions"].append(data_diag_event)
         
         self.txPackets.append(seqNr)
         global lastPacketGenTime
@@ -1717,22 +1940,13 @@ class node():
         self.tx_activity["active"] = False
         self.tx_status_file.write(" "+str(env.now)+"\n")
         
-        #Whether goes back to RX mode or CAD
-        if(repeater_sleep_algo):
-            if((self.packet[0].packetType == "DATA_up" or self.packet[0].packetType == "DATA_down") and (len(self.packetsFifo.items) == 0)):
-                self.mode = "CAD"
-                self.batteryUpdate(env, self.currentCad)
-                self.setIconColorByMode(env, get_linenumber())
-                self.worAckReceived = -1
-
-            else:
-                self.mode = "RX"
-                self.batteryUpdate(env, self.currentRx)
-                self.setIconColorByMode(env, get_linenumber())
-        else:
-            self.mode = "RX"
-            self.batteryUpdate(env, self.currentRx)
-            self.setIconColorByMode(env, get_linenumber())
+        # Do not let completion of an older forwarding flow reset state needed
+        # by a newer overlapping flow. The CAD process performs the eventual
+        # transition after the idle deadline and pending-work checks.
+        self.mode = "RX"
+        self.batteryUpdate(env, self.currentRx)
+        self.setIconColorByMode(env, get_linenumber())
+        self.extendRxIdleDeadline(env)
 
         if(realtime_graphics  and graphics):
             self.eraseTxArrows()
@@ -1742,6 +1956,27 @@ class node():
         nodesThatReceivedPkt = []
         for i in range(0, len(nodes)):
             if(i != self.id):
+                if data_diag_event is not None and nodes[i].type.lower() != "ed":
+                    if self.packet[i].lost:
+                        outcome = "out_of_range"
+                    elif self.packet[i].collided != 0:
+                        outcome = "collision"
+                    elif nodes[i].canReceivePacket():
+                        outcome = "scheduled_receive"
+                    else:
+                        outcome = "receiver_unavailable"
+                    data_diag_event["receivers"].append(
+                        {
+                            "receiver": i,
+                            "receiverType": nodes[i].type,
+                            "outcome": outcome,
+                            "mode": nodes[i].mode,
+                            "cadProcessActive": nodes[i].cadProcessActive,
+                            "collided": self.packet[i].collided,
+                            "processed": self.packet[i].processed,
+                            "distance": self.dist[i],
+                        }
+                    )
                 if (self.packet[i].lost):
                     lostPackets.append(f"{nodes[i].type.upper()}:{nodes[i].id} SeqNr:{self.packet[i].seqNr}")
                 else:
