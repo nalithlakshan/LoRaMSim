@@ -14,7 +14,7 @@ env = simpy.Environment()
 
 # Debug Mode
 debug = 1
-state_data_logging = True
+state_data_logging = False
 
 # turn on/off graphics
 graphics = 1
@@ -44,6 +44,7 @@ repeater_role_changes = 0
 
 # Averaege packet sending interval of end devices
 avgSendTime = 600000 #in ms 
+dataPacketsPerWor = 5 #number of sequential DATA packets sent after one ED WOR/ACK
 repeatDelayMultiplier = 5 #mean repeater waiting period = airtime * repeatDelayMultiplier 
 worPreambleDuration = 1030 #ms; margin above the 1000 ms CAD period
 repeaterRxIdleTimeout = 20000 #ms; ACK wait + standby/forwarding time + margin
@@ -61,7 +62,7 @@ sf12 = np.array([12,-134.50,-132.25,-132.25])
 
 sensi = np.array([sf7,sf8,sf9,sf10,sf11,sf12])
 sf = 7
-bw = 500
+bw = 125
 bw_index = {125: 1, 250: 2, 500: 3}
 minsensi = sensi[sf-7][bw_index[bw]] #if SF, BW unknown, use -112.0dB for minsensi
 
@@ -95,6 +96,7 @@ if (graphics == 1):
 packetSeq = 0
 totalSimPackets = 20
 lastPacketGenTime = 0
+generatedDataPacketCount = 0
 
 # list of nodes
 nodes = []
@@ -110,6 +112,7 @@ packetsRecBS = []
 lastTimePacketRecBS = 0
 dataPacketDiagnostics = {}
 worPacketDiagnostics = {}
+packetTransactionOverrides = {}
 Q1_time = 0
 Q2_time = 0
 Q3_time = 0
@@ -186,22 +189,21 @@ def checkcollision(packet, receiverNode):
 #        |f1-f2| <= 60 kHz if f1 or f2 has bw 250
 #        |f1-f2| <= 30 kHz if f1 or f2 has bw 125
 def frequencyCollision(p1,p2):
-    if (abs(p1.freq-p2.freq)<=120 and (p1.bw==500 or p2.freq==500)):  #240 not 120 ????????
+    # Frequencies are stored in Hz, while bandwidth values are in kHz.
+    if (abs(p1.freq-p2.freq)<=120000 and (p1.bw==500 or p2.bw==500)):
         if(debug):
             print ("   --collision frequency at 500kHz bw")
         return True
-    elif (abs(p1.freq-p2.freq)<=60 and (p1.bw==250 or p2.freq==250)): #120 not 60 ?????????
+    elif (abs(p1.freq-p2.freq)<=60000 and (p1.bw==250 or p2.bw==250)):
         if(debug):
             print ("   --collision frequency at 250kHz bw")
         return True
-    else:
-        if (abs(p1.freq-p2.freq)<=30):                                #60 not 30 (at CF=125kHz) ??????????
-            if(debug):
-                print ("   --collision frequency at 125kHz bw")
-            return True
-        #else:
+    elif (abs(p1.freq-p2.freq)<=30000):
+        if(debug):
+            print ("   --collision frequency at 125kHz bw")
+        return True
     if(debug):
-        print ("   --no frequency coll")
+        print ("   --no frequency collision")
     return False
 
 
@@ -217,7 +219,7 @@ def sfCollision(p1, p2):
 
 
 def powerCollision(p1, p2):
-    powerThreshold = 6 # or 6 dB considering worst cases
+    powerThreshold = 3 # dB capture threshold
     if(debug):
         print ("   --pwr: node {0.nodeid} {0.rssi:3.2f} dBm node {1.nodeid} {1.rssi:3.2f} dBm; diff {2:3.2f} dBm".format(p1, p2, round(p1.rssi - p2.rssi,2)))
     if abs(p1.rssi - p2.rssi) < powerThreshold:
@@ -288,6 +290,13 @@ def airtime(sf,cr,pl,bw, premlen=8):
     payloadSymbNB = 8 + max(math.ceil((8.0*pl-4.0*sf+28+16-20*H)/(4.0*(sf-2*DE)))*(cr+4),0)
     Tpayload = payloadSymbNB * Tsym
     return Tpream, Tpayload
+
+
+def packetTransactionId(seqNr):
+    """Return the stable source/sequence key shared by WOR and DATA packets."""
+    sourceId, packetNumber, *_ = seqNr.split("|")
+    logicalPacketId = f"{sourceId}|{packetNumber}"
+    return packetTransactionOverrides.get(logicalPacketId, logicalPacketId)
 
 
 #FUNCTIONS FOR POSITION LEARNING ALGORITHM
@@ -485,6 +494,11 @@ class node():
         self.antennaType = "dual"  #single/dual
         self.packetSourcesAtRx = []
         self.recPackets = []
+        # Reception alone does not make a DATA packet a duplicate. A repeater
+        # may first overhear a packet without being selected to forward or
+        # retain it, then later receive a copy for which it is a valid standby
+        # or next-hop repeater.
+        self.handledDataPackets = set()
         self.txPackets = []
         self.packet = []
         self.dist = []
@@ -517,6 +531,10 @@ class node():
         self.worAckReceived = -1    # -1 means not expecting ack, 0 means expecting ack, 1 means ack received
         self.awaitingToSendWorAck = 0 #by Rp to ED
         self.toWhichEdAmIAwaitingToSendAck = [] #list of ED IDs
+        self.pendingWorAckTransaction = None
+        self.pendingWorAckCandidates = set()
+        self.worAckStateByTransaction = {}
+        self.pendingEdWorAcks = {}
 
         #Symchronization related
         self.cadTimingAdjustment = 0
@@ -655,12 +673,20 @@ class node():
             or len(self.packetsFifo.items) > 0
             or self.nTransmitters.count > 0
             or len(self.nTransmitters.queue) > 0
-            or self.awaitingToSendWorAck != 0
+            or len(self.pendingEdWorAcks) > 0
+        )
+
+    def syncPendingEdWorAckState(self):
+        """Maintain legacy summary fields from transaction-specific ACK state."""
+        self.awaitingToSendWorAck = int(bool(self.pendingEdWorAcks))
+        self.toWhichEdAmIAwaitingToSendAck = list(
+            self.pendingEdWorAcks.values()
         )
 
 
     def createPackets(self, packetType = "OTHER", premlen=8, intendedRxId=-1, nodeAcknowledged=-1, seqNr=None, addTime=None):
         global experiment
+        global bw
         global Ptx
         global minsensi
         global maxDist
@@ -687,7 +713,6 @@ class node():
         # determining tx LoRa params  
         if(experiment == 1):     
             sf = 7
-            bw = 500
             cr = 2
             freq = 915900000 # Data channel for repeaters
             if (self.type.lower() == "ed"):
@@ -820,7 +845,10 @@ class node():
     def endDeviceStateMachine(self, env):
         global packetSeq
         global lastPacketGenTime
+        global generatedDataPacketCount
         global totalSimPackets
+        global dataPacketsPerWor
+        global packetTransactionOverrides
         global nodes
 
         while(True):
@@ -829,21 +857,31 @@ class node():
             self.setIconColorByMode(env, get_linenumber())
             yield env.timeout(random.expovariate(1.0/float(self.period)))
 
-            packetSeq = packetSeq + 1
-
-            if (packetSeq > totalSimPackets):
-                lastPacketGenTime = env.now
+            if packetSeq >= totalSimPackets:
                 if(debug):
                     print(
-                        f"[GEN_DONE] T={env.now:.2f} ED={self.id} packetSeq={packetSeq} "
-                        f"totalSimPackets={totalSimPackets} lastPacketGenTime={lastPacketGenTime:.2f}"
+                        f"[BURST_ALLOCATION_DONE] T={env.now:.2f} ED={self.id} "
+                        f"packetSeq={packetSeq} totalSimPackets={totalSimPackets}"
                     )
                 break
 
-            # Other EDs can increment the global counter while this ED waits
-            # for its WOR acknowledgement. Keep this packet's assigned number
-            # stable for the complete WOR/DATA exchange.
-            currentPacketSeq = packetSeq
+            # Reserve the complete burst before yielding so concurrent ED
+            # processes cannot allocate duplicate sequence numbers.  A final
+            # partial burst stops exactly at totalSimPackets.
+            burstEndPacketSeq = min(
+                packetSeq + dataPacketsPerWor,
+                totalSimPackets,
+            )
+            burstPacketSeqs = list(
+                range(packetSeq + 1, burstEndPacketSeq + 1)
+            )
+            packetSeq = burstEndPacketSeq
+            worPacketSeq = burstPacketSeqs[0]
+            burstTransactionId = f"{self.id}|{worPacketSeq}"
+            for burstPacketSeq in burstPacketSeqs:
+                packetTransactionOverrides[
+                    f"{self.id}|{burstPacketSeq}"
+                ] = burstTransactionId
 
             self.mode = "RX"
             self.batteryUpdate(env, self.currentRx)
@@ -865,12 +903,19 @@ class node():
             
             if(repeater_sleep_algo):
                 if(self.worAckReceived == -1):
-                    #first send WORed then data packet
+                    # Send one WOR/ACK exchange for the complete DATA burst.
                     self.nextRp = -1 #broadcast WOR
-                    seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|WOR_up"
+                    seqNr = f"{self.id}|{worPacketSeq}|{round(env.now, 1)}|WOR_up"
                     addTime = round(env.now, 1)
                     self.tx_activity["active"] = True
                     self.createPackets(packetType="WOR_up", premlen=-1, seqNr=seqNr, addTime=addTime)
+                    self.pendingWorAckTransaction = packetTransactionId(seqNr)
+                    self.pendingWorAckCandidates = {
+                        candidate.id
+                        for candidate in nodes
+                        if candidate.type.lower() == "rp"
+                        and not self.packet[candidate.id].lost
+                    }
                     self.tx_activity["start"] = env.now
                     self.tx_activity["end"] = env.now + self.packet[0].rectime
                     self.tx_activity["preamble_duration"] = self.packet[0].Tprem
@@ -892,41 +937,55 @@ class node():
                             break
 
                     if(self.worAckReceived == 1):
-                        #carrier sensing
-                        if(carrier_sensing_ed ==1): 
-                            while(len(self.packetSourcesAtRx) != 0):
-                                yield env.timeout(1)
-                                # if(debug):
-                                #     print("ED: waiting till medium is idle")
-
                         self.worAckReceived = -1
-                        seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
-                        addTime = round(env.now, 1)
-                        self.tx_activity["active"] = True
-                        self.createPackets(packetType="DATA_up", intendedRxId=self.nextRp, seqNr=seqNr, addTime=addTime)
-                        self.tx_activity["start"] = env.now
-                        self.tx_activity["end"] = env.now + self.packet[0].rectime
-                        self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-                        self.tx_activity["tx_packet_type"] = "DATA_up"
-                        self.sent = self.sent + 1
-                        self.tx_status_file.write(" "+str(env.now))
-                        yield env.process(self.transmit(env))
+                        self.pendingWorAckTransaction = None
+                        self.pendingWorAckCandidates.clear()
+                        for currentPacketSeq in burstPacketSeqs:
+                            if(carrier_sensing_ed ==1):
+                                while(len(self.packetSourcesAtRx) != 0):
+                                    yield env.timeout(1)
+
+                            seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
+                            addTime = round(env.now, 1)
+                            self.tx_activity["active"] = True
+                            self.createPackets(packetType="DATA_up", intendedRxId=self.nextRp, seqNr=seqNr, addTime=addTime)
+                            self.tx_activity["start"] = env.now
+                            self.tx_activity["end"] = env.now + self.packet[0].rectime
+                            self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                            self.tx_activity["tx_packet_type"] = "DATA_up"
+                            self.sent = self.sent + 1
+                            generatedDataPacketCount += 1
+                            if generatedDataPacketCount == totalSimPackets:
+                                lastPacketGenTime = env.now
+                                if(debug):
+                                    print(
+                                        f"[GEN_DONE] T={env.now:.2f} ED={self.id} "
+                                        f"generatedDataPacketCount={generatedDataPacketCount} "
+                                        f"lastPacketGenTime={lastPacketGenTime:.2f}"
+                                    )
+                            self.tx_status_file.write(" "+str(env.now))
+                            yield env.process(self.transmit(env))
 
             else:
-                seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
-                addTime = round(env.now, 1)
-                self.tx_activity["active"] = True
-                self.createPackets(packetType="DATA_up", seqNr=seqNr, addTime=addTime)
-                self.tx_activity["start"] = env.now
-                self.tx_activity["end"] = env.now + self.packet[0].rectime
-                self.tx_activity["preamble_duration"] = self.packet[0].Tprem
-                self.tx_activity["tx_packet_type"] = "DATA_up"
-                self.sent = self.sent + 1
-                self.tx_status_file.write(str(env.now))
-                # for i in range(0, len(nodes)):
-                #     self.packet[i].addTime = round(env.now, 1)
-                #     self.packet[i].seqNr = f"{self.id}|{packetSeq}|{self.packet[i].addTime}|{self.tx_activity['tx_packet_type']}"
-                yield env.process(self.transmit(env))
+                for currentPacketSeq in burstPacketSeqs:
+                    if(carrier_sensing_ed ==1):
+                        while(len(self.packetSourcesAtRx) != 0):
+                            yield env.timeout(1)
+
+                    seqNr = f"{self.id}|{currentPacketSeq}|{round(env.now, 1)}|DATA_up"
+                    addTime = round(env.now, 1)
+                    self.tx_activity["active"] = True
+                    self.createPackets(packetType="DATA_up", seqNr=seqNr, addTime=addTime)
+                    self.tx_activity["start"] = env.now
+                    self.tx_activity["end"] = env.now + self.packet[0].rectime
+                    self.tx_activity["preamble_duration"] = self.packet[0].Tprem
+                    self.tx_activity["tx_packet_type"] = "DATA_up"
+                    self.sent = self.sent + 1
+                    generatedDataPacketCount += 1
+                    if generatedDataPacketCount == totalSimPackets:
+                        lastPacketGenTime = env.now
+                    self.tx_status_file.write(str(env.now))
+                    yield env.process(self.transmit(env))
 
 
     #only for the transmission by end-devices
@@ -1182,6 +1241,7 @@ class node():
         global nodes
         global lastTimePacketRecBS
         # yield env.timeout(repeaterProcessingTime) #wait for the processing time
+        transactionId = packetTransactionId(seqNr)
 
         data_receive_event = None
         if packet.packetType == "DATA_up" and self.type.lower() == "rp":
@@ -1202,7 +1262,9 @@ class node():
                 "packetNextRp": nextRp,
                 "receiverNextRp": self.nextRp,
                 "mode": self.mode,
-                "worAckReceived": self.worAckReceived,
+                "worAckReceived": self.worAckStateByTransaction.get(
+                    transactionId, -1
+                ),
                 "awaitingToSendWorAck": self.awaitingToSendWorAck,
                 "standbyBufferCount": self.standbyBufferCount,
                 "decision": "entered_receive",
@@ -1211,22 +1273,54 @@ class node():
 
         if (self.distanceValue >= prevDistanceValue and (packet.packetType == "DATA_up" or packet.packetType == "WOR_up")):
             self.cadScanSyncProcess(env, packet, seqNr, prevRp)
-            self.lowerDistanceRecBuffer.append([seqNr, nodes[prevRp].batteryPercentage, prevRp])
-            if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[prevRp].type.lower() != "ed" and self.nearestGwId==nodes[prevRp].nearestGwId and self.worAckReceived==0):
-                self.worAckReceived = 1
+            # A packet received directly from an ED is the packet that may
+            # need standby recovery; it is not evidence that a downstream
+            # infrastructure node has already forwarded it.
+            if nodes[prevRp].type.lower() != "ed":
+                self.lowerDistanceRecBuffer.append(
+                    [seqNr, nodes[prevRp].batteryPercentage, prevRp]
+                )
+            if(
+                self.type.lower() == "rp"
+                and packet.packetType == "WOR_up"
+                and nodes[prevRp].type.lower() != "ed"
+                and self.nearestGwId == nodes[prevRp].nearestGwId
+            ):
+                # A WOR from any suitable upstream repeater confirms that the
+                # forwarding direction is awake.  It therefore releases every
+                # DATA transaction already waiting for upstream readiness; the
+                # WOR sequence number does not have to match the held DATA.
+                for pendingTransaction, ackState in list(
+                    self.worAckStateByTransaction.items()
+                ):
+                    if ackState == 0:
+                        self.worAckStateByTransaction[pendingTransaction] = 1
 
         if(self.type.lower() == "rp" and packet.packetType == "WOR_up" and nodes[packet.nodeid].type.lower() != "ed"):
-            if(nodes[packet.nodeAcknowledged].type.lower() == "ed" and self.awaitingToSendWorAck ==1 and (packet.nodeAcknowledged in self.toWhichEdAmIAwaitingToSendAck)):
+            acknowledgedNode = packet.nodeAcknowledged
+            if(
+                0 <= acknowledgedNode < len(nodes)
+                and nodes[acknowledgedNode].type.lower() == "ed"
+                and self.pendingEdWorAcks.get(transactionId)
+                == acknowledgedNode
+            ):
                 if(debug):
-                    print("Rp:",self.id,"backing off without sending a WOR-ACK to ED:",packet.nodeAcknowledged)
-                self.toWhichEdAmIAwaitingToSendAck.remove(packet.nodeAcknowledged)
-                if len(self.toWhichEdAmIAwaitingToSendAck) == 0:
-                    self.awaitingToSendWorAck = 0
+                    print("Rp:",self.id,"backing off without sending a WOR-ACK to ED:",acknowledgedNode)
+                self.pendingEdWorAcks.pop(transactionId, None)
+                self.syncPendingEdWorAckState()
 
-        if (seqNr not in self.recPackets):
-            self.recPackets.append(seqNr) 
+        if seqNr not in self.recPackets:
+            self.recPackets.append(seqNr)
         else:
-            return 0 #already processed
+            dataPacketCanStillBeHandled = (
+                self.type.lower() == "rp"
+                and packet.packetType in ("DATA_up", "DATA_down")
+                and seqNr not in self.handledDataPackets
+            )
+            if not dataPacketCanStillBeHandled:
+                if data_receive_event is not None:
+                    data_receive_event["decision"] = "duplicate_already_handled"
+                return 0
         
         if(debug):
             print(f"Node {self.id}({self.type.upper()}) Processing Packet:{seqNr}")
@@ -1323,11 +1417,31 @@ class node():
         #check if it is an end-device
         elif (self.type.lower() == "ed"):
             if(repeater_sleep_algo):
-                if(packet.packetType == "WOR_up" and self.worAckReceived == 0 and nodes[packet.nodeid].type.lower() != "ed"):
+                matchingWorAck = (
+                    packet.packetType == "WOR_up"
+                    and self.worAckReceived == 0
+                    and nodes[packet.nodeid].type.lower() != "ed"
+                    and packet.nodeAcknowledged == self.id
+                    and transactionId == self.pendingWorAckTransaction
+                    and packet.nodeid in self.pendingWorAckCandidates
+                )
+                if matchingWorAck:
                     self.worAckReceived = 1
                     self.nextRp = packet.nodeid
                     if(debug):
                         print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received WOR ACK:{seqNr} | Next RP set to {self.nextRp}")
+                elif(
+                    packet.packetType == "WOR_up"
+                    and self.worAckReceived == 0
+                    and nodes[packet.nodeid].type.lower() != "ed"
+                    and debug
+                ):
+                    print(
+                        f"Node {self.id}(ED) ignored unrelated WOR ACK "
+                        f"{seqNr} from Node {packet.nodeid}; "
+                        f"acknowledged={packet.nodeAcknowledged}, "
+                        f"pending={self.pendingWorAckTransaction}"
+                    )
                 elif(packet.packetType == "DATA_up" or packet.packetType == "DATA_down"):
                     if(debug):
                         print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr}")
@@ -1343,9 +1457,9 @@ class node():
                     print(f"\nT = {env.now:.2f}| Node {self.id}({self.type.upper()}) Received Packet:{seqNr} from Node {prevRp}({nodes[prevRp].type.upper()})")
 
                 if(packet.packetType == "WOR_up" and nodes[prevRp].type.lower() == "ed"):
-                    self.awaitingToSendWorAck = 1
-                    self.toWhichEdAmIAwaitingToSendAck.append(prevRp)
-                    self.worAckReceived = 0
+                    self.pendingEdWorAcks[transactionId] = prevRp
+                    self.syncPendingEdWorAckState()
+                    self.worAckStateByTransaction[transactionId] = 0
                     yield env.timeout(random.uniform(packet.rectime*0.0, packet.rectime*4.0))
                     # yield env.timeout(random.expovariate(1.0/float(packet.rectime*repeatDelayMultiplier)))
                     if(carrier_sensing_rp ==1):
@@ -1358,33 +1472,39 @@ class node():
                         while(len(self.packetSourcesAtRx) != 0):
                             yield env.timeout(self.cadPeriodity)
 
-                    if(self.awaitingToSendWorAck == 1):
-                        
-                        packetInfo = [seqNr, prevRp]
-                        self.packetsFifo.put(packetInfo)
+                    if self.pendingEdWorAcks.get(transactionId) == prevRp:
                         with self.nTransmitters.request() as req:
                             yield req
-                            packetInfoOut = yield self.packetsFifo.get()
-                            edId,packetSeq,genTime,pktType =packetInfoOut[0].split("|")
+                            edId,packetSeq,genTime,pktType = seqNr.split("|")
 
                             if(carrier_sensing_rp ==1):
                                 while(len(self.packetSourcesAtRx) != 0):
                                     yield env.timeout(self.cadPeriodity)
 
-                            if((self.worAckReceived == 1 or self.awaitingToSendWorAck == 0) and pktType=="WOR_up"):
+                            if self.pendingEdWorAcks.get(transactionId) != prevRp:
                                 if(debug):
-                                    print(f"Node {self.id} not sending WOR ACK to ED {edId} as it already received ACK or is not expecting any ACK")
+                                    print(
+                                        f"Node {self.id} not sending WOR ACK to ED "
+                                        f"{edId} for transaction {transactionId}"
+                                    )
                                 return 0
                             self.tx_activity["active"] = True
-                            self.createPackets(pktType, premlen, self.nextRp, packetInfoOut[1], packetInfoOut[0], round(env.now, 1))
+                            self.createPackets(
+                                pktType,
+                                premlen,
+                                self.nextRp,
+                                prevRp,
+                                seqNr,
+                                round(env.now, 1),
+                            )
                             self.tx_activity["start"] = env.now
                             self.tx_activity["end"] = env.now + self.packet[0].rectime
                             self.tx_activity["preamble_duration"] = self.packet[0].Tprem
                             self.tx_activity["tx_packet_type"] = pktType
                             self.tx_status_file.write(str(env.now))
                             yield env.process(self.transmit(env))
-                            self.awaitingToSendWorAck = 0
-                            self.toWhichEdAmIAwaitingToSendAck = []
+                            self.pendingEdWorAcks.pop(transactionId, None)
+                            self.syncPendingEdWorAckState()
                     
                 else:
                     if(positional_algo):
@@ -1394,31 +1514,59 @@ class node():
                             return 0
 
                         if(packet.packetType == "WOR_up" or packet.packetType == "DATA_up"):
-                            if(self.distanceValue < prevDistanceValue or prevDistanceValue == -1):
+                            if(
+                                self.distanceValue < prevDistanceValue
+                                or prevDistanceValue == -1
+                            ):
                                 
                                 packetInfo = [seqNr, prevRp]
                                 
                                 if(packet.packetType == "WOR_up" and self.nearestGwId==nodes[prevRp].nearestGwId):
-                                    self.worAckReceived = 0
+                                    self.worAckStateByTransaction.setdefault(
+                                        transactionId, 0
+                                    )
 
-                                if(standby_repeater_algo):          
-                                    if(self.id != nextRp and nextRp != -1 and nodes[nextRp].type.lower()=="rp" and self.distanceValue>nodes[nextRp].distanceValue):
+                                if(standby_repeater_algo):
+                                    standbyCandidate = (
+                                        self.id != nextRp
+                                        and nextRp != -1
+                                        and nodes[nextRp].type.lower() == "rp"
+                                        and self.distanceValue
+                                        > nodes[nextRp].distanceValue
+                                    )
+                                    if standbyCandidate:
                                         
-                                        if(packet.packetType=="DATA_up" and self.worAckReceived==0):
+                                        if(
+                                            packet.packetType == "DATA_up"
+                                            and self.worAckStateByTransaction.get(
+                                                transactionId, -1
+                                            ) == 0
+                                        ):
                                             k = 0
                                             while(True):
                                                 yield env.timeout(10)
                                                 k +=1
-                                                if(self.worAckReceived==1 or k==1000):
+                                                if(
+                                                    self.worAckStateByTransaction.get(
+                                                        transactionId, -1
+                                                    ) == 1
+                                                    or k == 1000
+                                                ):
                                                     if(debug and k==1000):
                                                         print(f"Node {self.id}({self.type.upper()}) didn't receive a WOR-ACK for Pkt:{seqNr}")
                                                     break
-                                        elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
-                                            if data_receive_event is not None:
-                                                data_receive_event["decision"] = "drop_not_expecting_data"
+                                        elif(
+                                            packet.packetType == "DATA_up"
+                                            and self.worAckStateByTransaction.get(
+                                                transactionId, -1
+                                            ) == -1
+                                        ):
                                             if(debug):
-                                                print(f"Node {self.id}({self.type.upper()}) isn't expecting any Pkt but got:{seqNr}")
-                                            return 0
+                                                print(
+                                                    f"Node {self.id}({self.type.upper()}) "
+                                                    f"entering standby for DATA without "
+                                                    f"matching WOR state: {seqNr}"
+                                                )
                                         
                                         if(packet.packetType=="DATA_up"):
                                             standByTime = float(packet.rectime*repeatDelayMultiplier +5000)
@@ -1463,25 +1611,54 @@ class node():
                                     
                                     elif(self.id == nextRp or nextRp == -1):
                                         # print("received by the one addressed!")
-                                        if(packet.packetType=="DATA_up" and self.worAckReceived==0):
+                                        if(
+                                            packet.packetType == "DATA_up"
+                                            and self.worAckStateByTransaction.get(
+                                                transactionId, -1
+                                            ) == 0
+                                        ):
                                             k = 0
                                             while(True):
                                                 yield env.timeout(10)
                                                 k +=1
-                                                if(self.worAckReceived==1 or k==1000):
+                                                if(
+                                                    self.worAckStateByTransaction.get(
+                                                        transactionId, -1
+                                                    ) == 1
+                                                    or k == 1000
+                                                ):
                                                     break
 
-                                        elif(packet.packetType=="DATA_up" and self.worAckReceived==-1):
-                                            if data_receive_event is not None:
-                                                data_receive_event["decision"] = "drop_addressed_but_not_expecting_data"
-                                            return 0
+                                        elif(
+                                            packet.packetType == "DATA_up"
+                                            and self.worAckStateByTransaction.get(
+                                                transactionId, -1
+                                            ) == -1
+                                        ):
+                                            if nextRp == -1:
+                                                if data_receive_event is not None:
+                                                    data_receive_event["decision"] = "drop_broadcast_not_expecting_data"
+                                                return 0
+                                            if debug:
+                                                print(
+                                                    f"Node {self.id}({self.type.upper()}) "
+                                                    f"recovering addressed DATA without "
+                                                    f"matching WOR state: {seqNr}"
+                                                )
                                         
                                         # elif(packet.packetType=="WOR_up" and self.worAckReceived==1):
                                         #     return 0
 
                                         self.packetsFifo.put(packetInfo)
                                         if data_receive_event is not None:
-                                            data_receive_event["decision"] = "addressed_repeat"
+                                            if (
+                                                self.worAckStateByTransaction.get(
+                                                    transactionId, -1
+                                                ) == -1
+                                            ):
+                                                data_receive_event["decision"] = "addressed_recovery_repeat"
+                                            else:
+                                                data_receive_event["decision"] = "addressed_repeat"
                                         with self.nTransmitters.request() as req:
                                             yield req
                                             packetInfoOut = yield self.packetsFifo.get()
@@ -1570,6 +1747,8 @@ class node():
 
         seqNr = packetInfo[0]
         x,y,t,pktType =seqNr.split("|")
+        if pktType in ("DATA_up", "DATA_down"):
+            self.handledDataPackets.add(seqNr)
 
         yield env.timeout(random.uniform(0.8*standByTime, 1.2*standByTime))
 
@@ -1717,8 +1896,8 @@ class node():
     
     def timeTillNextWorTxBegin(self, env, premlen=-1):
         global worPreambleDuration
+        global bw
         sf = 7
-        bw = 500
         Tpream = 0
         Tsym = (2.0**sf)/bw
         if(premlen == -1):
@@ -1743,16 +1922,16 @@ class node():
     
 
     def tPreamToPremlen(self, Tpream):
+        global bw
         sf = 7
-        bw = 500
         Tsym = (2.0**sf)/bw
         premlen = int(Tpream/Tsym - 4.25) +random.choice([0,1,2,3,4,5,6,7,8,9,10])
         return premlen
     
 
     def premlenToTPream(self, premlen):
+        global bw
         sf = 7
-        bw = 500
         Tsym = (2.0**sf)/bw
         Tpream = (premlen + 4.25)*Tsym
         return Tpream
@@ -1762,6 +1941,7 @@ class node():
         global nodeClockAccuracy
         global wor_preamble_shrinking_algo
         global worPreambleDuration
+        global bw
 
         if(wor_preamble_shrinking_algo==0):
             return self.tPreamToPremlen(worPreambleDuration)
@@ -1770,7 +1950,6 @@ class node():
             return self.tPreamToPremlen(worPreambleDuration)
         
         sf = 7
-        bw = 500
         Tsym = (2.0**sf)/bw
         delta = 2*nodeClockAccuracy/1000000
         # Tpream = 2*delta*(env.now - self.worUpPacketHistory[0])+ (1+6+8)*Tsym
@@ -1828,6 +2007,8 @@ class node():
         global fignum
 
         x,y,t,pktType =seqNr.split("|")
+        if pktType in ("DATA_up", "DATA_down"):
+            self.handledDataPackets.add(seqNr)
 
         self.mode = "RX"
         self.batteryUpdate(env, self.currentRx)

@@ -12,11 +12,11 @@ def run_script(script_filename, script_args):
 if __name__ == "__main__":
     # List of tuples: (script filename, script arguments)
     script_args_list = [
-        ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '3000', '-total_sim_packets', '1000']),
-        ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '3000', '-total_sim_packets', '2000']),
-        ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '3000', '-total_sim_packets', '3000']),
-        ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '3000', '-total_sim_packets', '4000']),
-        ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '3000', '-total_sim_packets', '5000']),
+        ('representative_network_3.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '10000', '-total_sim_packets',  '5000']),
+        ('representative_network_3.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '30000', '-total_sim_packets',  '5000']),
+        ('representative_network_3.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '60000', '-total_sim_packets',  '5000']),
+        ('representative_network_3.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '120000', '-total_sim_packets',  '5000']),
+        ('representative_network_3.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '300000', '-total_sim_packets', '5000']),
 
         # ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '2500', '-total_sim_packets', '1000']),
         # ('representative_network.py',[ '-repeater_delay_multiplier', '3', '-avg_send_time', '2500', '-total_sim_packets', '2000']),

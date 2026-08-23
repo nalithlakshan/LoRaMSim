@@ -9,7 +9,7 @@ import numpy as np
 
 xmax = 600
 ymax = 400
-maxDist =90.1456151562057
+maxDist =170.367564280662
 
 plt.ion()
 plt.figure()

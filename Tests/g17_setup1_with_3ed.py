@@ -179,28 +179,44 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
     total_ed_tx_successes = 0
     total_ed_tx_losses = 0
     total_power_consumption = 0
-    # ED 22 uses RP 3, ED 23 uses RP 2, and ED 24 uses RP 5.
-    ed_repeater_pairs = [
-        (22, ed22, rp4),
-        (23, ed23, rp3),
-        (24, ed24, rp6),
+    generated_data_packets = set()
+
+    def first_repeater_received(seq_nr, source_id):
+        diagnostic = sim.dataPacketDiagnostics.get(seq_nr, {})
+        return any(
+            receiver["outcome"] == "scheduled_receive"
+            and receiver["receiverType"].lower() == "rp"
+            for transmission in diagnostic.get("transmissions", [])
+            if transmission["sender"] == source_id
+            for receiver in transmission["receivers"]
+        )
+
+    end_device_pairs = [
+        (22, ed22),
+        (23, ed23),
+        (24, ed24),
     ]
-    for topology_id, ed, corresponding_rp in ed_repeater_pairs:
-        ed_tx_pkts = len(ed.txPackets)
-        ed_tx_successes = len([
+    for topology_id, ed in end_device_pairs:
+        ed_data_packets = [
             packet for packet in ed.txPackets
-            if packet in corresponding_rp.recPackets
-        ])
+            if packet.endswith("|DATA_up")
+        ]
+        generated_data_packets.update(ed_data_packets)
+        ed_tx_pkts = len(ed_data_packets)
+        ed_tx_successes = sum(
+            first_repeater_received(packet, ed.id)
+            for packet in ed_data_packets
+        )
         ed_tx_losses = ed_tx_pkts - ed_tx_successes
         total_ed_tx_successes += ed_tx_successes
         total_ed_tx_losses += ed_tx_losses
         if ed_tx_pkts > 0:
             if ed_tx_pkts < 5:
-                print("ED", topology_id, "Sent Pkts:", ed.txPackets)
-            print("ED", topology_id, "Sent Pkts:", ed_tx_pkts)
-            print("ED", topology_id, "Pkts successfully sent to corresponding repeater:", ed_tx_successes)
-            print("ED", topology_id, "Pkts failed to be captured by corresponding repeater:", ed_tx_losses)
-            print("ED", topology_id, "percentage of initial Pkt transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%")
+                print("ED", topology_id, "DATA packets:", ed_data_packets)
+            print("ED", topology_id, "DATA sent:", ed_tx_pkts)
+            print("ED", topology_id, "DATA received by at least one repeater:", ed_tx_successes)
+            print("ED", topology_id, "DATA not received by any repeater:", ed_tx_losses)
+            print("ED", topology_id, "percentage of initial DATA transmission failures:", round(ed_tx_losses/ed_tx_pkts*100,1), "%")
 
     for topology_id, rp in zip([2, 3, 4, 5, 6], repeaters):
         total_power_consumption += rp.batteryCapacity - rp.batteryRemaining
@@ -213,13 +229,21 @@ def main(repeater_delay_multiplier, avg_send_time, total_sim_packets):
 
     
     print("********************************************")
-    print("Total Generated Packets:", total_sim_packets)
-    # total_lost_pkts = total_sim_packets - len(set(gw1.recPackets+gw2.recPackets))
-    total_lost_pkts = total_sim_packets - len(sim.packetsRecBS)
+    gateway_received_packets = set(sim.packetsRecBS)
+    missing_gateway_packets = generated_data_packets - gateway_received_packets
+    initial_loss_packets = {
+        seq_nr for seq_nr in missing_gateway_packets
+        if not first_repeater_received(
+            seq_nr, int(seq_nr.split("|")[0])
+        )
+    }
+    intermediate_loss_packets = missing_gateway_packets - initial_loss_packets
+    total_lost_pkts = len(missing_gateway_packets)
+    total_intermediate_losses = len(intermediate_loss_packets)
 
-    total_intermediate_losses = total_lost_pkts-total_ed_tx_losses
+    print("Total Generated Packets:", len(generated_data_packets))
     print("Total Lost Packets:", total_lost_pkts)
-    print("---> Lost at initial ED transmission:", total_ed_tx_losses)
+    print("---> Lost at initial ED DATA transmission:", len(initial_loss_packets))
     print("---> Lost at intermediate repetition:", total_intermediate_losses, "\n")
 
     print("\nTotal Standy \t:",sim.total_stanby)
@@ -280,7 +304,7 @@ if __name__ == "__main__":
     # # Add your command-line arguments
     parser.add_argument("-repeater_delay_multiplier" , default=3 , help="How many times the repeater mean waiting period is greater than the pkt transmission air time?")
     parser.add_argument("-avg_send_time"             , default=3600000 , help="Average time period of an end-device sending a packet")
-    parser.add_argument("-total_sim_packets"         , default=10000 , help="Total number of packets to process in the simulation")
+    parser.add_argument("-total_sim_packets"         , default=1000 , help="Total number of packets to process in the simulation")
 
     # # Parse the command-line arguments
     args = parser.parse_args()
