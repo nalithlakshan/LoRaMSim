@@ -1,1 +1,1 @@
-This repository contains all the code used in the experiments presented in our research paper, Extending the LoRaWAN Relay Specification for Battery-Operable LoRa Mesh Networking
+This repository contains all the simulation code used in the experiments presented in our research papers. Simulation scripts are located in the Tests folder. 
